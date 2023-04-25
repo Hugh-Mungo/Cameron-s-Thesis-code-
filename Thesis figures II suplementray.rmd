@@ -1,0 +1,3357 @@
+---
+word_document:
+  reference_docx: template.docx
+  toc: yes
+  toc_depth: 2
+  number_sections: yes
+  fig_caption: yes
+  fig_height: 4
+  fig_width: 6
+  keep_md: yes
+author: "me"
+date: "24/08/2022"
+output: word_document
+eval: no
+title: "Thesis figures"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE)
+```
+
+#### Package installation ####
+```{r Package installation}
+# CRAN packages #
+install.packages("Seurat")
+install.packages("ggbeeswarm")
+install.packages("reticulate")
+install.packages("BiocManager")
+install.packages("ggVennDiagram")
+install.packages("Matrix")
+install.packages("seqinr")
+install.packages('NMF')
+install.packages("rgl")
+install.packages("RColorBrewer")
+install.packages("reshape2")
+install.packages("ggrepel")
+# Bioconductor packages #
+BiocManager::install("slingshot")
+BiocManager::install("DelayedMatrixStats")
+BiocManager::install("MAST")
+BiocManager::install("BiocNeighbors")
+# Github packages #
+devtools::install_github("jokergoo/circlize")
+devtools::install_github("jokergoo/ComplexHeatmap")
+devtools::install_github("sqjin/CellChat")
+
+```
+
+#### Package loading ####
+```{r}
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(rgl)
+library(reshape2)
+library(ggbeeswarm)
+library(reticulate)
+library(ggrepel)
+library(slingshot)
+library(CellChat)
+library(seqinr)
+
+```
+
+#### Custom functions ####
+```{r}
+fun.l<- function(x){
+  x<- unlist(strsplit(x, ","))
+}
+
+v<- function(data){
+  View(data)
+}
+
+d.jpeg<- function(plot, file, width, height, quality, res){
+  if(missing(quality)){quality = 100}
+  if(missing(width)){width = 2000}
+  if(missing(height)){height = 2000}
+  if(missing(res)){res = 300}
+  
+  jpeg(file = file, quality = quality, width = width, height = height, res = res)
+  plot = print(plot)
+  dev.off()
+}
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/test.jpg", plot = 
+       #DimPlot(data, label = TRUE, label.box = TRUE))
+
+fun.pct.picker<- function(data){
+  
+  f_pct <- data[["pca"]]@stdev / sum(data[["pca"]]@stdev) * 100
+	f_cumu <- cumsum(f_pct)
+	f_co1 <- which(f_cumu > 90 & f_pct < 5)[1]
+	f_co2 <- sort(which((f_pct[1:length(f_pct) - 1] - f_pct[2:length(f_pct)]) > 0.1), decreasing = T)[1] + 1
+	f_pcs <- min(f_co1, f_co2)
+	return(f_pcs)
+	
+}
+
+d.dotplot<- function(data, feature, ident, cols, split.by){
+  
+  feature<- fun.l(feature)
+  
+  #need to have a complete list of idents to work, so adds the missing ones (checks the whole ident vector vs the ident vector) back but orders the specified ones
+  ident<- fun.l(ident)
+  whole.ident<- levels(data)
+  x<- ident
+  if(!all(x == whole.ident)){x<- append(x, whole.ident)}
+  x<- x[!duplicated(x)]
+  data@active.ident<- factor(data@active.ident, levels = x)
+  
+  #for generting the plot titles
+  w<- strsplit(ident, "[.]") # sqaure brackets to allow me to split by "." as otherwise "." is treated as any character
+  w<- unlist(w)
+  
+  #checks more than just the first ident location: splits the string vector, takes only the even number (back/dorsal...), deletes duplicated values and reoders the string with "&" 
+  x = 0
+  w.II<- NULL
+ 
+  n<- 1:length(w)
+  n<- subset(n, n %% 2 == 0)
+
+  for(i in seq_along(n)){w.II<- append(w.II,w[n[i]])}
+  w.II<- w.II[!duplicated(w.II)]
+ 
+  n<- seq_along(w.II)
+  if(sum(n)>1){
+  #bad fix, to be more robust implement inside a for loop
+     t<- paste(w.II, w.II[1], sep = " & ")
+     if(sum(n) > 3){ t<- paste(t[2], w.II[3], sep = " & ")}else{t<- t[2]}
+   
+  }else{t = w.II[1]}
+  
+  if(missing(cols)){cols = fun.l("#3983A0,white,red")}else{cols<- fun.l(cols)}
+  
+  DotPlot(object = data, features = feature, idents = ident, dot.scale = 7) + 
+  scale_colour_gradient2(low = cols[1], mid = cols[2], high = cols[3])+
+  scale_shape_manual(values = "grey")+#outline code
+  theme_bw()+
+  theme(panel.grid= element_blank(),
+        panel.background = element_rect(colour = "black", size= NULL),
+        axis.text.x = element_text(angle = 90))+
+  labs(title = t)+
+  geom_point(aes(size=pct.exp), shape = 21, colour="#525659", stroke=0.5)
+  
+}
+d.ggfeatureplot <- function(data, feature, split.by, reduction, max.cutoff, size){
+  feature<- fun.l(feature)
+  if(missing(reduction)){reduction = "UMAP"}
+  if(missing(max.cutoff)){max.cutoff = 1}
+  if(missing(size)){size = 2}
+  
+  for(i in seq_along(feature)){
+    
+    t = try(FeaturePlot(data, features = feature[i]),
+    silent = TRUE)
+  
+    if(isTRUE(class(t) ==  "try-error")) { 
+    print(feature[i])
+    next 
+    }else{ 
+    
+    print(i)
+    
+    if(!missing(split.by)){
+    x<- FetchData(data, vars = paste(reduction,"_1", sep = ""))
+    y<- FetchData(data, vars = paste(reduction,"_2", sep = ""))
+    z<- FetchData(data, vars = feature[i])
+    split<- FetchData(data, vars = split.by)
+    
+    df<- data.frame(x,y,z,split)
+    
+    names(df)[1]<- "Reduction_1"
+    names(df)[2]<- "Reduction_2"
+    names(df)[3]<- "Expression"
+    names(df)[4]<- "split"
+    
+    cut<- quantile(df$Expression, max.cutoff) #calculates quartile
+    df$Expression<- ifelse(df$Expression > cut, max(df$Expression), df$Expression) #replaces values above the max.cutoff line with 0
+    
+    df<- df[order(df$Expression, decreasing = FALSE),]
+    
+    p<- ggplot(df, aes(Reduction_1,Reduction_2, colour = Expression))+
+    geom_point(size =  size)+
+    theme_minimal()+
+    scale_colour_gradientn(colors = c("#3983A0","lightgreen", "yellow", "red"))+
+    ggtitle(feature[i])+
+    xlab(paste(reduction,"_1", sep = ""))+
+    ylab(paste(reduction,"_2", sep = ""))+
+    facet_wrap(vars(split))
+    
+    print(p)
+    }else{
+    x<- FetchData(data, vars = paste(reduction,"_1", sep = ""))
+    y<- FetchData(data, vars = paste(reduction,"_2", sep = ""))
+    z<- FetchData(data, vars = feature[i])
+    
+    df<- data.frame(x,y,z)
+    
+    names(df)[1]<- "Reduction_1"
+    names(df)[2]<- "Reduction_2"
+    names(df)[3]<- "Expression"
+    
+    cut<- quantile(df$Expression, max.cutoff) #calculates quartile
+    df$Expression<- ifelse(df$Expression > cut, max(df$Expression), df$Expression)
+    
+    #df<- df[df$Expression < cut,]
+    
+    df<- df[order(df$Expression, decreasing = FALSE),]#so most expressed nuceli are on top
+    
+    p<- ggplot(df, aes(Reduction_1,Reduction_2, colour = Expression))+
+    geom_point(size = size)+
+    theme_minimal()+
+    scale_colour_gradientn(colors = c("#3983A0","lightgreen", "yellow", "red"))+
+    ggtitle(feature[i])+
+    xlab(paste(reduction,"_1", sep = ""))+
+    ylab(paste(reduction,"_2", sep = ""))
+    
+    print(p)
+     }
+    }
+  }
+}
+
+fun.pseudoplot<- function(data1, data2, feature, split.by, points, lineage, confidence){
+  
+  
+  feature<- fun.l(feature)
+  gene<- FetchData(data1, vars = feature)
+  if(missing(data2)){data2<- sce}else{sce<- data2}
+  if(missing(points)){points = 0}
+  if(missing(lineage)){lineage = 1}
+  if(missing(confidence)){confidence = 0.95}#default 
+  
+  lineage<- paste0(lineage)#to add quotation marks to it 
+  lineage<- paste("slingPseudotime_",lineage,sep = "")
+  df<- data.frame(sce[[lineage]],gene)
+    names(df)[1]<- "time"
+    df<- melt(df, id.vars = "time")
+    names(df)[2]<- "Gene_names"
+    names(df)[3]<- "expression"
+    
+  if(length(feature) >= 2){x<- "Gene expression"}else{x<- paste(feature,"expression", sep = " ")}
+  #add in colour by sample functionality depending on the number of genes called 
+    
+  if(missing(split.by)){
+    
+    ggplot(df, aes(x = time, y = expression, colour = Gene_names))+
+      geom_point(alpha = points)+
+      geom_smooth(na.rm = TRUE, level = confidence, )+
+      xlab("Pseudotime ordering")+
+      ylab(x)
+    
+  }else{
+    
+    ident<- FetchData(data1, vars = split.by)
+    df<- data.frame(df,ident)
+    names(df)[4]<- "Identity"
+      
+    ggplot(df, aes(x = time, y = expression, colour = Identity))+
+     geom_point(alpha = points)+
+     geom_smooth(na.rm = TRUE, level = confidence)+
+     xlab("Pseudotime ordering")+
+     ylab(x)
+    
+  }
+}
+fun.volcano<- function(data, ident.1, ident.2, label.genes, top.genes, method, log.base, diff.exp, colour.signiff, colour.not_signiff, label.repulsion, colour.modifier, num.top.genes){
+  if(missing(label.genes)){label.genes = "ooga_booga"}
+  if(missing(top.genes)){top.genes = FALSE}
+  # val holds the y axis decision #
+  if(top.genes == "l"){val<- "avg_log2FC"}else{if(top.genes == "u"){val<- "u_score"}}
+  if(missing(num.top.genes)){num.top.genes = 5}
+  if(missing(method)){method = "wilcox"}
+  if(missing(log.base)){log.base = 2}
+  if(missing(ident.2)){ident.2 = NULL}else{ident.2<- fun.l(ident.2)}
+  if(missing(colour.signiff)){colour.signiff = "orange"}
+  if(missing(colour.not_signiff)){colour.not_signiff = "darkgrey"}
+  if(missing(label.repulsion)){label.repulsion = 1}
+  if(missing(colour.modifier)){colour.modifier = 1}
+  
+  ident.1<- fun.l(ident.1)
+  label.genes<- fun.l(label.genes)
+  
+  if(!missing(diff.exp)){x <- diff.exp}else{x<- FindMarkers(data, ident.1 = ident.1, ident.2 = ident.2, test.use = method)}
+  df<- data.frame(x)
+  
+  if(is.null(ident.2)){ident.2 = "All"}
+  
+  ####title naming logic, putting string back together####
+  if(length(ident.1) >= 2){
+  x<- ident.1[1]
+  for(i in 2:length(ident.1)){
+   x<- paste(x, ident.1[i], sep = ", ")
+  }
+  ident.1<- x
+  }
+  
+  if(length(ident.2) >= 2){
+  x<- ident.2[1]
+  for(i in 2:length(ident.2)){
+   x<- paste(x, ident.2[i], sep = ", ")
+  }
+  ident.2<- x
+  }
+  
+  ### colour modifier (through conversion to hsl colour code) ###
+  # has to convert to rgb then to hex as hsl to hex didn't seem to work #
+  left<- colour.signiff
+  left<- fun.hex_to_hsl(left)
+  left<- fun.hsl_to_rgb(left[1],left[2],left[3]*colour.modifier)
+  left<- fun.rgb_to_hex(left[1],left[2],left[3])
+  
+  df$colour<- df$p_val_adj
+  df$colour<- ifelse(df$colour > 0.05, "not significant", "significant Log2Fc > 0")
+  df$colour<- ifelse(df$avg_log2FC < 0 & df$p_val_adj < 0.05, "significant Log2Fc < 0", df$colour)
+  
+  label.genes<- df[label.genes,]
+  
+  ### U_score ###
+  df$u_score<- df$avg_log2FC
+  # to avoid infinite values if pct.2 = 0 #
+  df$pct.2<- ifelse(df$pct.2 <= 0, 0.0001, df$pct.2)
+  df$pct_avg<- df$pct.1/df$pct.2
+  df$u_score<- df$u_score*df$pct_avg
+  
+
+  ### ----------------------------------------------------------------------------------
+  
+  if(top.genes == FALSE){
+    
+    top.genes<- "ooga_booga"
+    top.genes<- df[top.genes,]
+    top.genes$genes<- row.names(top.genes)
+    
+    top.genes<- rbind(top.genes, label.genes)
+    
+  }else{
+    
+  top.genes<- data.frame(head(df[order(df[[val]], decreasing = TRUE),],num.top.genes))
+  # as the u_score dosen't provide anything meaning full in reverse so it will be exlcuded #
+  if(val == "avg_log2FC"){
+    top.genes<- rbind(top.genes,head(df[order(df[[val]], decreasing = FALSE),],num.top.genes))
+  }
+
+  
+  # to allow the labelling of both "top.genes" & "label.genes" similtaneously #
+  check<- c(row.names(top.genes), row.names(label.genes))
+  check<- check[!duplicated(check)]
+  top.genes<- df[check,]
+  top.genes$genes<- row.names(top.genes)
+
+  
+  }
+  
+### SWapping out ggplot elements depending on u_score or logfc that you are plotting ###
+  if(val == "avg_log2FC"){
+    gg<- ggplot(df, aes(avg_log2FC,-log(p_val_adj,log.base)))
+    gg_repel<- geom_label_repel(data = top.genes, mapping = aes(avg_log2FC, -log(p_val_adj,log.base), label = genes, colour = colour), key_glyph = draw_key_point, min.segment.length = unit(0, 'lines'), max.overlaps = 1000, force = label.repulsion)
+    ylab<- paste("-Log",log.base,"(adjusted P_value)",sep = "")
+    
+  }else{
+    
+    if(val == "u_score"){
+      gg<- ggplot(df, aes(avg_log2FC,-log(p_val_adj,log.base)))
+       gg_repel<- geom_label_repel(data = top.genes, mapping = aes(avg_log2FC, -log(p_val_adj,log.base), label = genes, colour = colour), key_glyph = draw_key_point, min.segment.length = unit(0, 'lines'), max.overlaps = 1000, force = label.repulsion)
+      ylab<- paste("-Log",log.base,"(adjusted P_value)",sep = "")
+    }
+  }
+  
+    gg+  
+    geom_point(data = df[df$avg_log2FC > 0, ], pch = 16, aes(colour = colour))+
+    geom_point(data = df[df$avg_log2FC < 0, ], pch = 1, aes(colour = colour))+
+    geom_vline(xintercept = 0, linetype = "dashed", alpha = 1, lwd = 1)+
+    gg_repel+
+    xlab("Average Log2 fold change in expression")+
+    ylab(ylab)+
+    ggtitle("Volcano plot: ", subtitle = paste(ident.1,"⬤ vs",ident.2,"〇",sep = " "))+
+    scale_colour_manual(values = c("significant Log2Fc > 0" = colour.signiff, "not significant" = colour.not_signiff, "significant Log2Fc < 0" = left))
+}
+fun.hex_to_hsl<- function(hex) {
+  rgb_vals <- col2rgb(hex)
+  r <- rgb_vals[1] / 255
+  g <- rgb_vals[2] / 255
+  b <- rgb_vals[3] / 255
+  cmax <- max(r, g, b)
+  cmin <- min(r, g, b)
+  delta <- cmax - cmin
+  l <- (cmax + cmin) / 2
+  if (delta == 0) {
+    h <- 0
+    s <- 0
+  } else {
+    if (l < 0.5) {
+      s <- delta / (cmax + cmin)
+    } else {
+      s <- delta / (2 - cmax - cmin)
+    }
+    del_r <- (((cmax - r) / 6) + (delta / 2)) / delta
+    del_g <- (((cmax - g) / 6) + (delta / 2)) / delta
+    del_b <- (((cmax - b) / 6) + (delta / 2)) / delta
+    if (r == cmax) {
+      h <- del_b - del_g
+    } else if (g == cmax) {
+      h <- (1/3) + del_r - del_b
+    } else if (b == cmax) {
+      h <- (2/3) + del_g - del_r
+    }
+    if (h < 0) {
+      h <- h + 1
+    } else if (h > 1) {
+      h <- h - 1
+    }
+  }
+  c(h * 360, s, l)
+}
+
+fun.hsl_to_rgb<- function(h, s, l) {
+  h <- h %% 360
+  s <- pmax(0, pmin(s, 1))
+  l <- pmax(0, pmin(l, 1))
+  c <- (1 - abs(2 * l - 1)) * s
+  x <- c * (1 - abs((h / 60) %% 2 - 1))
+  m <- l - c / 2
+  if (h < 60) {
+    r <- c + m
+    g <- x + m
+    b <- 0 + m
+  } else if (h < 120) {
+    r <- x + m
+    g <- c + m
+    b <- 0 + m
+  } else if (h < 180) {
+    r <- 0 + m
+    g <- c + m
+    b <- x + m
+  } else if (h < 240) {
+    r <- 0 + m
+    g <- x + m
+    b <- c + m
+  } else if (h < 300) {
+    r <- x + m
+    g <- 0 + m
+    b <- c + m
+  } else {
+    r <- c + m
+    g <- 0 + m
+    b <- x + m
+  }
+  rgb_vals <- c(r, g, b) * 255
+  rgb_vals <- round(rgb_vals)
+  rgb_vals
+}
+fun.rgb_to_hex<- function(r, g, b) {
+  rgb_vals <- c(r, g, b)
+  rgb_vals <- pmax(0, pmin(rgb_vals, 255))
+  rgb_hex <- sprintf("#%02X%02X%02X", rgb_vals[1], rgb_vals[2], rgb_vals[3])
+  rgb_hex
+}	
+```
+
+#### RDS ####
+Available on request
+```{r}
+# RDS file containing the processed Seuratobject (integrated dataset) generated by Dr Barbara Shih #
+data<- readRDS(file = "D:/4_RDS/Masters/old&new_revised_idents.rds")
+
+# RDS file containing the processed PHATE reduced FB I population generated by Dr Barbara Shih #
+phate<- readRDS("K:/headon_grp/roslin_bioinformatics/2021-10-27-_9767_-Denis_Headon_snRNAseq_skin_3regions/documentation/20220503_pseudotime_c4/slingshot_noFilt_c4/obj_slingshot.rds")
+```
+
+#### Clustering annotation ####
+```{r new names for samples and idents I}
+### Ident names ###
+#Dermis  
+Idents(data)<- "integrated_snn_res.0.5"
+  
+  f.11<- subset(data, idents = "11")
+      f.11<- Cells(f.11)
+  g.0<- subset(data, idents = "0")
+       g.0<- Cells(g.0)
+  e.10<- subset(data, idents = "10")
+      e.10<- Cells(e.10)
+ 
+  j.8<- subset(data, idents = "8")
+      j.8<- Cells(j.8)
+  i.2<- subset(data, idents = "2")
+      i.2<- Cells(i.2)
+      
+  h.4<- subset(data, idents = "4")
+      h.4<- Cells(h.4)
+
+Idents(data)<- "integrated_snn_res.0.51"
+#Epidermis
+  a.1_2<- subset(data, idents = "1_2")
+      a.1_2<- Cells(a.1_2)
+  b.1_1<- subset(data, idents = "1_1")
+     b.1_1<- Cells(b.1_1)
+  c.1_0<- subset(data, idents = "1_0")
+      c.1_0<- Cells(c.1_0)
+  p.3_2<- subset(data, idents = "3_2")
+       p.3_2<- Cells(p.3_2)
+  q.3_1<- subset(data, idents = "3_1")
+       q.3_1<- Cells(q.3_1)
+  r.3_0<- subset(data, idents = "3_0")
+       r.3_0<- Cells(r.3_0)
+  
+#Other
+  k.7<- subset(data, idents = "7")
+    k.7<- Cells(k.7)
+  d.14<- subset(data, idents = "14")
+     d.14<- Cells(d.14)
+  l.9<- subset(data, idents = "9")
+    l.9<- Cells(l.9)
+  m.12<- subset(data, idents = "12")
+    m.12<- Cells(m.12)
+  n.13<- subset(data, idents = "13")
+    n.13<- Cells(n.13)
+  o.15<- subset(data, idents = "15")
+    o.15<-Cells(o.15)
+  s.5<- subset(data, idents = "5")
+       s.5<- Cells(s.5)
+  t.6<- subset(data, idents = "6")
+       t.6<- Cells(t.6)
+  
+      
+      
+data$new.idents<- ifelse(names(data$nCount_RNA) %in% a.1_2, "BK_III", 
+                        ifelse(names(data$nCount_RNA) %in% b.1_1, "BK_II", 
+                         ifelse(names(data$nCount_RNA) %in% c.1_0, "BK_I", 
+                          ifelse(names(data$nCount_RNA) %in% d.14, "Mc", 
+                           ifelse(names(data$nCount_RNA) %in% e.10, "FB_IV", 
+                            ifelse(names(data$nCount_RNA) %in% f.11, "FB_II", 
+                             ifelse(names(data$nCount_RNA) %in% g.0, "FB_III",
+                              ifelse(names(data$nCount_RNA) %in% h.4, "FB_I", 
+                               ifelse(names(data$nCount_RNA) %in% i.2, "FB_VI", 
+                                ifelse(names(data$nCount_RNA) %in% j.8, "FB_V", 
+                                 ifelse(names(data$nCount_RNA) %in% k.7, "7",
+                                  ifelse(names(data$nCount_RNA) %in% l.9, "9", 
+                                   ifelse(names(data$nCount_RNA) %in% m.12, "12", 
+                                    ifelse(names(data$nCount_RNA) %in% n.13, "13", 
+                                     ifelse(names(data$nCount_RNA) %in% o.15, "15",
+                                      ifelse(names(data$nCount_RNA) %in% p.3_2, "3",
+                                       ifelse(names(data$nCount_RNA) %in% q.3_1, "3",
+                                        ifelse(names(data$nCount_RNA) %in% r.3_0, "3",
+                                         ifelse(names(data$nCount_RNA) %in% s.5, "5",
+                                          ifelse(names(data$nCount_RNA) %in% t.6, "6", NA))))))))))))))))))))
+                                    
+
+Idents(data)<- "new.idents"
+#data<- RenameIdents(data, 
+                    #"1_0" = "BK_I", "1_1" = "BK_II", "1_2" = "BK_III",
+                    #"14" = "Mc", 
+                    #"4" = "Dermis_I", "11" = "Dermis_II", "0" = "Dermis_III", "10" = "Dermis_IV", "8" = "Dermis_V", "2" = "Dermis_VI")
+
+data[["alt_integrated_snn_res.0.51_sample_type"]]<- paste(data$new.idents, data$sample_type, sep = ".")
+data[["new.idents.0.51"]]<- data$new.idents
+```
+
+```{r new names for samples and idents II}
+# adding on the suffix "_digit" for the fingers and "_skin" for the back #
+Idents(data)<- data$alt_integrated_snn_res.0.51_sample_type
+all<- data.frame(data$alt_integrated_snn_res.0.51_sample_type)
+x<- as.character(all$data.alt_integrated_snn_res.0.51_sample_type)
+
+y<- NULL
+for(i in seq_along(x)){
+  z<- unlist(strsplit(x[i], "[.]"))
+  if(z[2] == "Back"){
+    y<- append(y,paste(x[i], "_skin", sep = ""))
+  }else{
+    y<- append(y,paste(x[i], "_digit", sep = ""))
+  }
+    
+}
+
+all$new.idents.0.51_sample_type<- y
+data[["new.idents.0.51_sample_type"]]<- all$new.idents.0.51_sample_type
+
+Idents(data)<- data$new.idents.0.51_sample_type
+
+### orig.ident names ###
+Idents(data)<- data$orig.ident
+data[["new.orig.ident"]]<- data$orig.ident
+data$new.orig.ident<- factor(data$new.orig.ident, levels = levels(data))
+levels(data$new.orig.ident)<- d("Back.skin_I,Ventral.digit_I,Dorsal.digit_I,Back.skin_II,Ventral.digit_II,Dorsal.digit_II")
+
+### Sample_type names ###
+Idents(data)<- data$sample_type
+data[["new.sample_type"]]<- data$sample_type
+data$new.sample_type<- factor(data$new.sample_type, levels = levels(data))
+levels(data$new.sample_type)<- d("Back_skin,Ventral_digit,Dorsal_digit")
+```
+
+
+```{r UMAP of everything, fig.height=6, fig.width=6}
+Idents(data)<- data$new.idents.0.51
+
+col<- (c("#89C5DA", "#38333E", "#74D944", "#CE50CA", "#3F4921", "#6DDE88", "#CBD588", "#5F7FC7", 
+"#673770", "#D3D93E", "#689030", "#508578", "#D7C1B1", "blue", "#AD6F3B", "#7FDCC0", 
+"#D14285", "yellow", "#652926", "#C0717C", "#C84248", "#8569D5", "#5E738F", "#D1A33D", 
+"#8A7C64", "#599861"))
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/UMAP general labels 23.04.23.jpg", plot = 
+DimPlot(data, pt.size = 0.8, label = TRUE, label.box = TRUE, repel = TRUE)+
+ theme_minimal()+
+  theme(aspect.ratio = 1, legend.position = 'none')+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  ggtitle("UMAP of all skin regions")+
+  scale_colour_manual(values = col)
+)
+```
+```{r Epidermal annotation 22.04.23}
+Idents(data)<- data$integrated_snn_res.0.5
+x<- FindMarkers(data, ident.1 = "1", test.use = "MAST")
+y<- FindMarkers(data, ident.1 = "3", test.use = "MAST")
+z<- FindMarkers(data, ident.1 = "1", ident.2 = "3", test.use = "MAST")
+w<- FindMarkers(data, ident.1 = d("1,3"), test.use = "MAST")
+```
+
+```{r Cluster 1 & 3 UMAP 22.04.23}
+epi<- subset(data, idents = d("1,3"))
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/Cluster 1 & 3 UMAP 22.04.23.jpg", plot = 
+DimPlot(epi, label = TRUE, label.box = TRUE, repel = TRUE)+
+   theme_minimal()+
+  theme(aspect.ratio = 1, legend.position = 'none')+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  xlim(c(-5,7))+
+  ylim(c(2.5,13))+
+  ggtitle("UMAP of clusters 1 & 3")
+)
+
+Idents(epi)<- epi$new.idents.0.51
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/Cluster BK I to III & 3 UMAP 22.04.23.jpg", plot = 
+DimPlot(epi, label = TRUE, label.box = TRUE, repel = TRUE)+
+   theme_minimal()+
+  theme(aspect.ratio = 1, legend.position = 'none')+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  xlim(c(-5,7))+
+  ylim(c(2.5,13))+
+  ggtitle("UMAP of clusters BK_I, BK_II, BK_III & 3")
+)
+```
+
+```{r volcano plot of 1 & 3 22.04.23}
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/Cluster 1 vs 3 volcano 22.04.23.jpg", plot = 
+fun.volcano(diff.exp = z, ident.1 = "1", ident.2 = "3",
+colour.modifier = 1.3, top.genes = "l", num.top.genes = 3,colour.signiff = "#F28C28", 
+label.genes = "EDAR,LEF1")+
+  theme_minimal()+
+   theme(aspect.ratio = 1)+
+  ggtitle("Cluster 1 vs 3")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+)
+```
+
+```{r Featureplots of cluster 1 and 3 22.04.23}
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/KRT14 featureplot 22.04.23.jpg", plot = 
+fun.ggplot.feature(data, feature = "KRT14")
+)
+```
+
+```{r cluster BK and 3 dotplot }
+Idents(epi)<- epi$new.idents.0.51
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/BK dotplot 22.04.23.jpg", plot = 
+d.dotplot(epi, feature = "EDAR,FGF20,SHH,LEF1", ident = d("BK_III,BK_II,BK_I,3"))+
+  theme(aspect.ratio = 1/3)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1)
+  )+
+  ggtitle("Placode genes", subtitle = "Basal keratinocyte (BK) sub-clusters & suprabasal keratinocytes")
+)
+```
+
+```{r Mc cell cycle analysis 22.04.23}
+Idents(data)<- data$new.idents.0.51
+
+mer<- subset(data, idents = "Mc")
+
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+mer<- CellCycleScoring(mer, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+table(mer$Phase)
+
+
+mer.dat<- FindMarkers(data, ident.1 = "Mc", test.use = "MAST")
+
+genes<- d("ISL1,KRT20,IVL")
+for(i in seq_along(genes)){
+   d.jpeg(file = paste("D:/3_Data & Plots/Masters corrections/",genes[i]," featureplot 22.04.23.jpg", sep = ""), plot = 
+  fun.ggplot.feature(data, feature = genes[i])
+  )
+}
+
+```
+
+```{r Dermis annotation fig 23.04.23}
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/DERMIS PDGFRA featureplot 23.04.23.jpg", plot = 
+fun.ggplot.feature(data, feature = "PDGFRA")
+)
+
+der<- subset(data, idents = d("FB_I,FB_II,FB_III,FB_IV,FB_V,FB_VI"))
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/DERMIS renamed dimplot 23.04.23.jpg", plot = 
+DimPlot(der, label = TRUE, label.box = TRUE, repel = TRUE, pt.size = 0.8)+
+  theme_minimal()+
+  theme(aspect.ratio = 1, legend.position = 'none')+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  xlim(c(-5,7))+
+  ylim(c(-10,3))+
+  ggtitle("UMAP of the fibroblast (FB) clusters")
+)
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/DERMIS fibroblasts marker genes 23.04.23.jpg", plot = 
+d.dotplot(der, feature = "DKK2,LEF1,PTCH1", ident = "FB_I,FB_II,FB_III,FB_IV,FB_V,FB_VI")+
+  theme(aspect.ratio = 1/3)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1)
+  )+
+  ggtitle("Fibroblast marker genes")+
+  coord_flip()
+)
+```
+
+```{r Minor populations annotation 23.04.23}
+minor<- subset(data, idents = d("5,6,7,9,12,13,15"))
+
+genes<- d("ACTA2,RGS5,ABCA10,PDGFRB,PAX3,SOX10,FLT1,PECAM1,CD14,MRC1,STAB2,PROX1,DCT,TYR")
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/MINOR marker genes dotplot 23.04.23.jpg", plot = 
+d.dotplot(minor, feature = genes, ident = "5,6,7,9,12,13,15")+
+  theme(aspect.ratio = 1/3)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1)
+  )+
+  ggtitle("Marker genes")
+)
+
+for(i in seq(from = 1, to = length(genes), by = 2)){
+  d.jpeg(file = paste("D:/3_Data & Plots/Masters corrections/MINOR marker genes ",genes[i],"featureplots 23.04.23.jpg", sep = ""), plot = 
+           fun.ggplot.feature(data, feature = genes[i])
+  )
+}
+```
+
+
+
+```{r Complete annotations 23.04.23}
+id.v<- d("BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit,Mc.Ventral_digit,FB_I.Ventral_digit,FB_II.Ventral_digit,FB_III.Ventral_digit,FB_IV.Ventral_digit,FB_V.Ventral_digit,FB_IV.Ventral_digit,3.Ventral_digit,5.Ventral_digit,6.Ventral_digit,7.Ventral_digit,9.Ventral_digit,12.Ventral_digit,13.Ventral_digit,15.Ventral_digit")
+
+id.d<- d("BK_I.Dorsal_digit,BK_II.Dorsal_digit,BK_III.Dorsal_digit,Mc.Dorsal_digit,FB_I.Dorsal_digit,FB_II.Dorsal_digit,FB_III.Dorsal_digit,FB_IV.Dorsal_digit,FB_V.Dorsal_digit,FB_IV.Dorsal_digit,3.Dorsal_digit,5.Dorsal_digit,6.Dorsal_digit,7.Dorsal_digit,9.Dorsal_digit,12.Dorsal_digit,13.Dorsal_digit,15.Dorsal_digit")
+
+id.b<- d("BK_I.Back_skin,BK_II.Back_skin,BK_III.Back_skin,Mc.Back_skin,FB_I.Back_skin,FB_II.Back_skin,FB_III.Back_skin,FB_IV.Back_skin,FB_V.Back_skin,FB_IV.Back_skin,3.Back_skin,5.Back_skin,6.Back_skin,7.Back_skin,9.Back_skin,12.Back_skin,13.Back_skin,15.Back_skin")
+
+genes<- d("KRT10,KRT14,EDAR,FGF20,LEF1,KRT20,ATOH1,PDGFRA,PTCH1,DKK2,ACTA2,FLT1,PROX1,STAB2,CD4,CD14,CDH19,PAX3,DCT,TYR")
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/ALL MARKER dotplot Ventral 23.04.23.jpg", width = 2200, plot = 
+d.dotplot(data, feature = genes, ident = rev(id.v))+
+  theme(aspect.ratio = 1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1)
+  )+
+  ggtitle("Vental digit", subtitle ="Marker genes")
+)
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/ALL MARKER dotplot Dorsal 23.04.23.jpg", width = 2200, plot = 
+d.dotplot(data, feature = genes, ident = rev(id.d))+
+  theme(aspect.ratio = 1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1)
+  )+
+  ggtitle("Dorsal digit", subtitle ="Marker genes")
+)
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/ALL MARKER dotplot Back 23.04.23.jpg", width = 2200, plot = 
+d.dotplot(data, feature = genes, ident = rev(id.b))+
+  theme(aspect.ratio = 1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1)
+  )+
+  ggtitle("Back skin", subtitle ="Marker genes")
+)
+```
+
+```{r annotation dotplots}
+#### I D E N T S ------------------------------- 
+ident.v<- rev(fun.l("3_0.Ventral,3_1.Ventral,3_2.Ventral,1_0.Ventral,1_1.Ventral,1_2.Ventral,14.Ventral,4.Ventral,0_10_11.Ventral,2_8.Ventral,5.Ventral,6.Ventral,7.Ventral,9.Ventral,12.Ventral,13.Ventral,15.Ventral"))
+ident.b<- rev(fun.l("3_0.Back,3_1.Back,3_2.Back,1_0.Back,1_1.Back,1_2.Back,14.Back,4.Back,0_10_11.Back,2_8.Back,5.Back,6.Back,7.Back,9.Back,12.Back,13.Back,15.Back"))
+ident.d<- rev(fun.l("3_0.Dorsal,3_1.Dorsal,3_2.Dorsal,1_0.Dorsal,1_1.Dorsal,1_2.Dorsal,14.Dorsal,4.Dorsal,0_10_11.Dorsal,2_8.Dorsal,5.Dorsal,6.Dorsal,7.Dorsal,9.Dorsal,12.Dorsal,13.Dorsal,15.Dorsal"))
+
+x<- list(ident.v,ident.b,ident.d)
+
+#### M A R K E R  G E N E S -------------------------------
+genes<- d("KRT10,KRT14,EDAR,FGF20,KRT20,ERBB4,PDGFRA,PTCH1,SOX2,DKK1,DKK2,ACTA2,FLT1,PROX1,STAB2,CD4,CD14,CDH19,PAX3,DCT,TYR")
+
+#### D O T P L O T -------------------------------
+for(i in seq_along(x)){
+  print(i)
+  print(
+  d.dotplot(data, feature = genes, ident = x[[i]])+
+     theme(axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1))
+    
+  )
+}
+
+d.dotplot(data, feature = "PDGFRA,DKK1,DKK2", ident = ident.v)+coord_flip()+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1))
+  
+#### F E A T U R E  P L O T S -------------------------------
+d.ggfeatureplot(data, feature = genes, split.by = "sample_type")
+
+fun.ggplot.feature(data, feature = "KRT20,IVL", split.by = "sample_type")
+```
+
+```{r}
+DimPlot(data)+
+  facet_wrap(vars(data$orig.ident))+
+  theme_minimal()
+
+
+DimPlot(data, reduction = "pca", label = TRUE, repel = TRUE)+ 
+  theme_minimal()+
+  NoLegend()+
+  theme(text = element_text(size = 15))
+```
+
+```{r cell numbers}
+df<- data.frame(table(data$integrated_snn_res.0.5, data$new.sample_type))
+names(df)[2]<- "Identities"
+
+#### P L O T -------------------------------
+#d.jpeg(file = "D:/3_Data & Plots/Masters corrections/Nuclei numbers per cluster per skin region 20.04.23.jpg", plot = 
+ggplot(df, aes(x = Var1, y = Freq, fill = Identities))+
+  geom_bar(stat = "identity")+
+  scale_fill_brewer(palette = "Pastel1")+
+  theme_minimal()+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 0.5
+  )+
+  xlab("Cluster")+
+  ylab("Number of nuclei")+
+  ggtitle("Nuclei number per cluster", subtitle = "Coloured by skin region")
+#)
+```
+
+```{r cell percentages}
+df<- data.frame(table(data$integrated_snn_res.0.51, data$sample_type))
+df<- df[df$Var1 == "1_0" | df$Var1 == "1_1" | df$Var1 == "1_2",]
+
+norm.v<- df[df$Var2 == "Ventral",]
+norm.v<- sum(norm.v$Freq)
+
+norm.b<- df[df$Var2 == "Back",]
+norm.b<- sum(norm.b$Freq)
+
+norm.d<- df[df$Var2 == "Dorsal",]
+norm.d<- sum(norm.d$Freq)
+
+z<- c(12.1,67.4,20.5,22.7,66.7,10.7,879/norm.v*100,581/norm.v*100,264/norm.v*100)
+
+df$Freq.n<- z
+
+#### P L O T
+ggplot(df, aes(x = Var2, y = Freq.n, fill = Var1))+
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Pastel2")
+
+#### O R I G  I D E N T -----------------------------------------------------------
+df<- data.frame(table(data$integrated_snn_res.0.51, data$orig.ident))
+df<- df[df$Var1 == "1_0" | df$Var1 == "1_1" | df$Var1 == "1_2",]
+
+norm.va<- df[df$Var2 == "Ventral",]
+norm.va<- sum(norm.va$Freq)
+
+norm.ba<- df[df$Var2 == "Back" ,]
+norm.ba<- sum(norm.ba$Freq)
+
+norm.da<- df[df$Var2 == "Dorsal",]
+norm.da<- sum(norm.da$Freq)
+
+norm.v<- df[df$Var2 == "V",]
+norm.v<- sum(norm.v$Freq)
+
+norm.b<- df[df$Var2 == "B",]
+norm.b<- sum(norm.b$Freq)
+
+norm.d<- df[df$Var2 == "D",]
+norm.d<- sum(norm.d$Freq)
+
+x<- c(norm.b,norm.b,norm.b,norm.ba,norm.ba,norm.ba,norm.d,norm.d,norm.d,norm.da,norm.da,norm.da,norm.v,norm.v,norm.v,norm.va,norm.va,norm.va)
+z<-NULL
+for(i in seq_along(df$Var1)){
+  print(i)
+  n<- df$Freq[i]/x[i]*100
+  z<- append(z,n)
+}
+
+df$Freq.n<- z
+
+#### P L O T
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/percentage BK graph 22.04.23.jpg", plot = 
+ggplot(df, aes(x = Var2, y = Freq.n, fill = Var1))+
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Pastel2")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 1
+  )+
+  xlab("Sample")+
+  ylab("Percentage (%)")+
+  labs(fill = "Cluster")+
+  ggtitle("Percentage of nuclei per skin region", subtitle = "Coloured by skin region")
+)
+
+#### W I T H  M E R K E L -----------------------------------------------------------
+df<- data.frame(table(data$integrated_snn_res.0.51, data$sample_type))
+df<- df[df$Var1 == "1_0" | df$Var1 == "1_1" | df$Var1 == "1_2" | df$Var1 == "14",]
+df<- df[df$Var2 == "Ventral",]
+
+n<- sum(df$Freq)
+df$Freq.n<- df$Freq/n*100
+
+ggplot(df, aes(x = Var2, y = Freq.n, fill = Var1))+
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Pastel2")
+
+#### W I T H  M E R K E L  +  T A I L -----------------------------------------------------------
+df<- data.frame(table(data$newcluster, data$sample_type))
+df<- df[df$Var1 == "1_0.Ventral" | df$Var1 == "1_1.Ventral" | df$Var1 == "1_2.Ventral" | df$Var1 == "14.Ventral" | df$Var1 == "Tail",]
+df<- df[df$Var2 == "Ventral",]
+
+
+n<- sum(df$Freq)
+df$Freq.n<- df$Freq/n*100
+
+names(df)[1]<- "Cluster_identities"
+
+ggplot(df, aes(x = Var2, y = Freq.n, fill = Cluster_identities))+
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Pastel2")+
+  xlab("Sample origin")+
+  ylab("Percentage of cells to make up the basal keratinocytes")+
+  ggtitle("Cluster 1 subcluster proprotions across sample locations")
+```
+
+```{r Differential expression, fig.height=4,fig.width=5.5}
+Idents(data)<- data$integrated_snn_res.0.5
+
+x<- FindMarkers(data, ident.1 = "1")
+y<- FindMarkers(data, ident.1 = "3")
+z<- FindMarkers(data, ident.1 = "14")
+
+w<- FindMarkers(data, ident.1 = d("4,0_10_11,2_8"))
+u<- FindMarkers(data, ident.1 = "1", ident.2 = "3")
+
+fun.volcano(data, ident.1 = "1", ident.2 = "3", diff.exp = u, label.genes = "KRT10,KRT1,KRT14,CDH3,EDAR,FGF20")+
+  theme_minimal()+
+   theme(text = element_text(size = 15))
+```
+
+```{r fig.height=3,fig.width=3}
+genes<- d("ABCA9,ACTA2,FLT1,STAB2,CD14,PAX3,DCT")
+
+d.ggfeatureplot(data, feature = genes)+
+   theme(text = element_text(size = 15))
+```
+
+#### Contamination ####
+```{r EN1 localisation}
+#### F E A T U R E  P L O T -------------------------------
+d.ggfeatureplot(data, feature = "EN1,WNT7A", split.by = "orig.ident")
+
+#### D O T P L O T -------------------------------
+d.dotplot(data, feature = "EN1,WNT7A", ident = rev(levels(data)))+coord_flip()
+```
+
+```{r Rationale for COL1A1}
+x<- FindMarkers(data, ident.1 = "1_0.Ventral", ident.2 = "1_1.Ventral", test.use = "MAST")
+fun.volcano(data, ident.1 = "1_0.Ventral", ident.2 = "1_1.Ventral", top.genes = TRUE, diff.exp = x)+
+  theme_minimal()
+```
+
+```{r Collagens within the keratinocytes}
+con<- d("COL1A1,COL1A2,COL3A1")
+data[["Contamination"]]<- PercentageFeatureSet(data, features = con)
+data[["Collagens"]]<- PercentageFeatureSet(data, features = con)
+
+Idents(data)<- data$integrated_snn_res.0.5
+epi<- subset(data, idents = "1")
+Idents(epi)<- epi$integrated_snn_res.0.51_sample_type
+
+#### F E A T U R E  P L O T -------------------------------
+fun.ggplot.feature(epi, feature = "nCount_RNA,Collagens", split.by = "integrated_snn_res.0.51_sample_type")
+
+##### D O T P L O T -------------------------------
+d.dotplot(epi, feature = "Collagens", ident = rev(levels(epi)))+coord_flip()
+
+#### F A N C Y  P L O T -------------------------------
+epi<- NormalizeData(epi)
+epi<- FindVariableFeatures(epi)
+epi<- ScaleData(epi, features = rownames(epi))
+
+d.quasi_componentplot(epi, comp1 = "COL1A1", comp2 = "EDAR", col = "integrated_snn_res.0.51", split.by = "sample_type")+
+  theme_minimal()
+```
+
+```{r}
+Idents(data)<- data$integrated_snn_res.0.5
+epi<- subset(data, idents = "1")
+Idents(epi)<- epi$integrated_snn_res.0.51_sample_type
+rm(data)
+
+df<- data.frame(epi$nCount_RNA,epi$integrated_snn_res.0.51,epi$sample_type, epi$Contamination)
+names(df)[1]<- "nCount_RNA"
+names(df)[2]<- "Cluster"
+names(df)[3]<- "sample_type"
+names(df)[4]<- "contam"
+
+df.v<- df[df$sample_type == "Ventral",]
+df.b<- df[df$sample_type == "Back",]
+df.d<- df[df$sample_type == "Dorsal",]
+
+#### C L U S T E R  S I Z E -------------------------------
+#divide nCount_RNA counts per cell (in a cluster) by the size of the parent cluster 
+#VENTRAL
+x<- df.v[df.v$Cluster == "1_0",]
+y<- df.v[df.v$Cluster == "1_1",]
+z<- df.v[df.v$Cluster == "1_2",]
+
+x$nCount_RNA_norm<- x$nCount_RNA/length(x$nCount_RNA)
+y$nCount_RNA_norm<- y$nCount_RNA/length(y$nCount_RNA)
+z$nCount_RNA_norm<- z$nCount_RNA/length(z$nCount_RNA)
+
+x$contam_norm<- x$contam/length(x$nCount_RNA)
+y$contam_norm<- y$contam/length(y$nCount_RNA)
+z$contam_norm<- z$contam/length(z$nCount_RNA)
+
+df.v<- rbind(x,y,z)
+
+#BACK
+x<- df.b[df.b$Cluster == "1_0",]
+y<- df.b[df.b$Cluster == "1_1",]
+z<- df.b[df.b$Cluster == "1_2",]
+
+x$nCount_RNA_norm<- x$nCount_RNA/length(x$nCount_RNA)
+y$nCount_RNA_norm<- y$nCount_RNA/length(y$nCount_RNA)
+z$nCount_RNA_norm<- z$nCount_RNA/length(z$nCount_RNA)
+
+x$contam_norm<- x$contam/length(x$nCount_RNA)
+y$contam_norm<- y$contam/length(y$nCount_RNA)
+z$contam_norm<- z$contam/length(z$nCount_RNA)
+
+df.b<- rbind(x,y,z)
+
+#Dorsal
+x<- df.d[df.d$Cluster == "1_0",]
+y<- df.d[df.d$Cluster == "1_1",]
+z<- df.d[df.d$Cluster == "1_2",]
+
+x$nCount_RNA_norm<- x$nCount_RNA/length(x$nCount_RNA)
+y$nCount_RNA_norm<- y$nCount_RNA/length(y$nCount_RNA)
+z$nCount_RNA_norm<- z$nCount_RNA/length(z$nCount_RNA)
+
+x$contam_norm<- x$contam/length(x$nCount_RNA)
+y$contam_norm<- y$contam/length(y$nCount_RNA)
+z$contam_norm<- z$contam/length(z$nCount_RNA)
+
+df.d<- rbind(x,y,z)
+  
+#### N C O U N T _ R N A -------------------------------
+n<- sum(df.v$nCount_RNA_norm)
+df.v$nCount_RNA_percentage<- df.v$nCount_RNA_norm/n*100
+
+n<- sum(df.b$nCount_RNA_norm)
+df.b$nCount_RNA_percentage<- df.b$nCount_RNA_norm/n*100
+
+n<- sum(df.d$nCount_RNA_norm)
+df.d$nCount_RNA_percentage<- df.d$nCount_RNA_norm/n*100
+
+#### C O N T A M -------------------------------
+n<- sum(df.v$contam_norm)
+df.v$contam_percentage<- df.v$contam_norm/n*100
+
+n<- sum(df.b$contam_norm)
+df.b$contam_percentage<- df.b$contam_norm/n*100
+
+n<- sum(df.d$contam_norm)
+df.d$contam_percentage<- df.d$contam_norm/n*100
+
+#### P L O T -------------------------------
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/nCount_RNA proportions plot 23.04.23.jpg", plot = 
+ggplot()+
+  geom_bar(stat = "identity", data = df.v, aes(x = sample_type, y = nCount_RNA_percentage, fill = Cluster))+
+  geom_bar(stat = "identity", data = df.b, aes(x = sample_type, y = nCount_RNA_percentage, fill = Cluster))+
+  geom_bar(stat = "identity", data = df.d, aes(x = sample_type, y = nCount_RNA_percentage, fill = Cluster))+
+  theme_minimal()+
+  xlab("Sample type")+
+  ylab("Percentage of total number of reads")+
+  scale_fill_brewer(palette = "Pastel1")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 1
+  )+
+  ggtitle("Relative proportion of number of reads", subtitle = "Percentage contribution of number of reads between skin regions")
+)
+#BEEN NORMALISED!!! 1_0.V = 28.68%, 1_1.V = 36.46%, 1_2.V = 34.86%
+
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/Collagen proportions plot 23.04.23.jpg", plot = 
+ggplot()+
+  geom_bar(stat = "identity", data = df.v, aes(x = sample_type, y = contam_percentage, fill = Cluster))+
+  geom_bar(stat = "identity", data = df.b, aes(x = sample_type, y = contam_percentage, fill = Cluster))+
+  geom_bar(stat = "identity", data = df.d, aes(x = sample_type, y = contam_percentage, fill = Cluster))+
+  theme_minimal()+
+  xlab("Skin region")+
+  ylab("Percentage expression of the collagens")+
+  scale_fill_brewer(palette = "Pastel1")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 1
+  )+
+  ggtitle("Relative proportion of collagen expression", subtitle = "Percentage contribution of expression of the collagens between skin regions")
+)
+#BEEN NORMALISED!!! 1_0.V = 71.90%, 1_1.V = 13.58%, 1_2.V = 14.52%
+```
+
+```{r BK contamination featureplot 23.04.23}
+d.jpeg(file = "D:/3_Data & Plots/Masters corrections/Collagens featureplot split 23.04.23.jpg", plot = 
+fun.ggplot.feature(epi, feature = "Collagens", split.by = "new.idents.0.51_sample_type")
+  
+)
+```
+
+```{r normalised histograms, fig.height=4,fig.width=12}
+df<- data.frame(epi$nCount_RNA,epi$integrated_snn_res.0.51,epi$sample_type, epi$Contamination)
+names(df)[1]<- "nCount_RNA"
+names(df)[2]<- "ident"
+names(df)[3]<- "sample_type"
+names(df)[4]<- "contam"
+
+df.v<- df[df$sample_type == "Ventral",]
+
+df.a<- df.v[df.v$ident == "1_0",]
+df.b<- df.v[df.v$ident == "1_1",]
+df.c<- df.v[df.v$ident == "1_2",]
+
+#### C L U S T E R  S I Z E -------------------------------
+#divide nCount_RNA counts per cell (in a cluster) by the size of the parent cluster 
+#VENTRAL
+x<- df.a
+y<- df.b
+z<- df.c
+
+#CHECK YOU CAN NORMALISE PERCENTAGES LIKE THAT!
+x$contam_norm<- x$contam/length(x$nCount_RNA)
+y$contam_norm<- y$contam/length(y$nCount_RNA)
+z$contam_norm<- z$contam/length(z$nCount_RNA)
+
+df.v<- rbind(x,y,z)
+#### P L O T -------------------------------
+width<- 0.05
+
+ggplot(df.v, aes(x = contam, fill = ident))+
+  geom_histogram(data = x, aes(y = (..count../sum(..count..))), binwidth = width)+
+  geom_histogram(data = y, aes(y = (..count../sum(..count..))), binwidth = width)+
+  geom_histogram(data = z, aes(y = (..count../sum(..count..))), binwidth = width)+
+  scale_fill_brewer(palette = "Pastel2")+
+  theme_minimal()+
+  NoLegend()+
+  
+ggplot(df.v, aes(x = contam, fill = ident))+
+  geom_histogram(data = x, aes(y = (..count../sum(..count..))), binwidth = width)+
+  geom_histogram(data = y, aes(y = (..count../sum(..count..))), binwidth = width)+
+  geom_histogram(data = z, aes(y = (..count../sum(..count..))), binwidth = width)+
+  scale_fill_brewer(palette = "Pastel2")+
+  facet_wrap(vars(ident))+
+  theme_minimal()
+```
+
+```{r checking the cell cycle}
+Idents(epi)<- epi$integrated_snn_res.0.51
+x<- subset(epi, idents = "1_0")
+
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+x<- CellCycleScoring(x, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+DimPlot(x, split.by = "integrated_snn_res.0.51_sample_type")+
+  theme_minimal()
+```
+
+#### Merkel cell anlysis ####
+```{r assessing other KRT20 positive cells}
+x<- subset(data, KRT20 > 0.001)
+
+  d.ggfeatureplot(x, feature = "IVL,ERBB4,SOX2,ISL1")
+  
+df<- FindMarkers(x, ident.1 = "14.Ventral", test.use = "MAST")
+```
+
+```{r Human count data from PISANI 1991}
+sample<- d("Hair_bearing,Dorsal_hand,Thumb,Forefinger,Middle,Ring,Little")
+counts<- c(23.4,10.2,71.5,83.5,103.5,83.2,61.2)
+error<- c(8.4,4.9,17.4,29.1,13.5,23.4,20.2)
+order<- seq_along(sample)
+
+df<- data.frame(sample, counts, error, order)
+
+ggplot(df, aes(x = reorder(sample, order), y = counts, fill = sample))+
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymax = error+counts, ymin = counts+error*-1), width = 0.2, linetype = 1)+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.8))+
+  xlab("Anatomical location")+
+  ylab("Mean counts (Merkel cell/mm^2)")
+```
+
+```{r Human count data from PISANI 1991 II}
+df<- read.csv(file = "M:/merkel cells anatomic.csv")
+names(df)[1]<- "sample"
+names(df)[2]<- "counts"
+names(df)[3]<- "error"
+df<- df[-c(1),]
+order<- seq_along(df$sample)
+
+df<- data.frame(df[1],df[2],df[3],order)
+
+ggplot(df, aes(x = reorder(sample, order), y = counts, fill = sample))+
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymax = error+counts, ymin = counts+error*-1), width = 0.2, linetype = 1)+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, hjust = 0))+
+  xlab("Anatomical location")+
+  ylab("Mean counts (Merkel cell/mm^2)")+NoLegend()
+```
+
+```{r Human plantar count data from INGRID 1986}
+weeks<- d("8,12,14,17")
+Epidermal_counts<- c(0,6.6,6.9,6.8)
+Dermal_counts<- c(0,0,0.27,1.4)
+order<- seq_along(weeks)
+
+
+df<- data.frame(weeks,Epidermal_counts, Dermal_counts, order)
+df<- melt(df, id.vars = d("weeks,order"))
+names(df)[3]<- "Locations"
+
+ggplot(df, aes(x = reorder(weeks, order), y = value, fill = Locations))+
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  xlab("Weeks in estimated gestational age")+
+  ylab("Counts (Merkel cell/mm^2)")
+```
+
+```{r MY WHOLEMOUNT count data}
+p1.11<- 16
+p2.11<- 19
+p3.11<- 31
+
+w11<- data.frame(p1.11,p2.11,p3.11)
+
+p1.12<- 291
+p2.12<- 138
+p3.12<- 397
+
+w12<- data.frame(p1.12,p2.12,p3.12)
+
+p1.13<- 155
+p2.13<- 142
+p3.13<- 563
+
+w13<- data.frame(p1.13,p2.13,p3.13)
+
+p1.14<- 1091
+p2.14<- 962
+p3.14<- 1540
+
+w14<- data.frame(p1.14,p2.14,p3.14)
+
+df<- data.frame(w11,w12,w13,w14)
+df<- melt(df)
+
+x<- c(11,12,13,14)
+y<- NULL
+for(i in seq_along(x)){
+y<- append(y, rep(x[i], times = 3))
+}
+
+df<- data.frame(df, y, rep(d("P1,P2,P3"), times = length(row.names(df))/3))
+names(df)[3]<- "ident"
+names(df)[4]<- "Digit_section"
+
+
+ggplot(df, aes(x = ident, y = value, fill = Digit_section))+
+  geom_bar(stat = "identity", position = "dodge")+
+  xlab("Weeks EGA")+
+  ylab(bquote("Merkel cells counts "~mm^-2))+
+  ggtitle("Comparison of Merkel cell counts")+
+  theme_minimal()+
+  scale_fill_manual(values = c("P1" = "#b6cfe7", "P2" = "#e7b6b3", "P3" = "#f9e2bb"))
+```
+```{r rate of change based on whole mount count data 1/3/23}
+df$rate_of_change<- NA
+
+for(i in seq_along(df$variable)){
+  x<- df$value[i+3] - df$value[i]
+  x<- x/df$value[i]
+  
+  df$rate_of_change[i]<- x
+}
+
+val<- NULL
+
+for(i in seq(from = 1, to = length(df$variable), by = 3)){
+  a<- i+2
+  b<- i+5
+  if(is.na(df$variable[b])){break}
+  else{
+    x<- sum(df$value[i:a])# old value #
+  y<- sum(df$value[a:b])# new value #
+  
+  z<- y-x
+  z<- z/x
+  
+  val<- append(val,z)
+  }
+}
+
+ages<- d("11 to 12,12 to 13,13 to 14")
+
+df<- data.frame(val,ages)
+
+ggplot(df, aes(x = ages, y = val, fill = ages))+
+  geom_bar(stat = "identity", position = "dodge")+
+  theme_minimal()#+
+  scale_fill_manual(values = c("P1" = "#b6cfe7", "P2" = "#e7b6b3", "P3" = "#f9e2bb"))
+```
+
+
+```{r cell cycle scoring Mc}
+#### T A K I N G  T H E  T A I L ------------------------------- 
+Idents(data)<- "integrated_snn_res.0.51_sample_type"
+v.1_0<- subset(data, idents = "1_0.Ventral")
+
+  p<- DimPlot(v.1_0, reduction = "umap")
+  p
+
+tail<- CellSelector(plot = p)
+notail.1_0<- setdiff(names(v.1_0$nCount_RNA), tail)
+rm(v.1_0)
+
+  a.1_2<- WhichCells(data, idents = "1_2.Ventral")
+  b.1_1<- WhichCells(data, idents = "1_1.Ventral")
+  c.1_0<- WhichCells(data, idents = "1_0.Ventral")
+  d.14<- WhichCells(data, idents = "14.Ventral")
+  e.3_2<- WhichCells(data, idents ="3_2.Ventral")
+  f.3_1<- WhichCells(data, idents ="3_1.Ventral")
+  g.3_0<- WhichCells(data, idents ="3_0.Ventral")
+  
+     
+data$newcluster<- ifelse(names(data$nCount_RNA) %in% a.1_2, "1_2.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% b.1_1, "1_1.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% notail.1_0, "1_0.Ventral",#REMEMBER NO TAIL TO 1_0
+                        ifelse(names(data$nCount_RNA) %in% d.14, "14.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% e.3_2, "3_2.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% f.3_1, "3_1.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% g.3_0, "3_0.Ventral", 
+                        ifelse(names(data$nCount_RNA) %in% tail, "McPro", NA))))))))
+
+Idents(data)<- "newcluster"
+DimPlot(data)
+
+#cleaning up
+names<- d("a.1_2,b.1_1,c.1_0,d.14,e.3_2,f.3_1,g.3_0,tail,notail.1_0")
+
+for(i in seq_along(names)){
+  print(names[i])
+  rm(list = names[i])
+}
+
+merkel<- subset(data, idents = d("Tail,14.Ventral"))
+
+#### C E L L  C Y C L E  S C O R I N G -------------------------------
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+merkel<- CellCycleScoring(merkel, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+DimPlot(merkel, pt.size = 2, split.by = "newcluster")+
+  theme_minimal()
+
+merkel[["phase.clu"]]<- paste(merkel$Phase, merkel$newcluster, sep = ".")
+table(merkel$phase.clu)
+
+#### T E S T I N G  K R T 2 0 -------------------------------
+krt20<- subset(merkel, KRT20 >= 0.01)
+table(krt20$newcluster)
+table(krt20$phase.clu)
+
+#as 40 cells from 'merkel' are in the G1 phase and 34 from only the 'krt20' -> means that KRT20 expressing cells make up 85% of G1 cells.
+```
+
+```{r Volcano plots 1/3/23}
+Idents(data)<- "integrated_snn_res.0.51_sample_type"
+v.1_0<- subset(data, idents = "1_0.Ventral")
+
+  p<- DimPlot(v.1_0, reduction = "umap")
+  p
+
+tail<- CellSelector(plot = p)
+notail.1_0<- setdiff(names(v.1_0$nCount_RNA), tail)
+rm(v.1_0)
+
+  a.1_2<- WhichCells(data, idents = "1_2.Ventral")
+  b.1_1<- WhichCells(data, idents = "1_1.Ventral")
+  c.1_0<- WhichCells(data, idents = "1_0.Ventral")
+  d.14<- WhichCells(data, idents = "14.Ventral")
+  e.3_2<- WhichCells(data, idents ="3_2.Ventral")
+  f.3_1<- WhichCells(data, idents ="3_1.Ventral")
+  g.3_0<- WhichCells(data, idents ="3_0.Ventral")
+  
+     
+data$newcluster<- ifelse(names(data$nCount_RNA) %in% a.1_2, "BK_III.Ventral_digit",
+                        ifelse(names(data$nCount_RNA) %in% b.1_1, "BK_II.Ventral_digit",
+                        ifelse(names(data$nCount_RNA) %in% notail.1_0, "BK_I.Ventral_digit",#REMEMBER NO TAIL TO 1_0
+                        ifelse(names(data$nCount_RNA) %in% d.14, "Mc.Ventral_digit",
+                        ifelse(names(data$nCount_RNA) %in% e.3_2, "3_2.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% f.3_1, "3_1.Ventral",
+                        ifelse(names(data$nCount_RNA) %in% g.3_0, "3_0.Ventral", 
+                        ifelse(names(data$nCount_RNA) %in% tail, "McPro.Ventral_digit", NA))))))))
+
+Idents(data)<- "newcluster"
+DimPlot(data)
+
+#cleaning up
+names<- d("a.1_2,b.1_1,c.1_0,d.14,e.3_2,f.3_1,g.3_0,tail,notail.1_0")
+
+for(i in seq_along(names)){
+  print(names[i])
+  rm(list = names[i])
+}
+
+x<- FindMarkers(data, ident.1 = "McPro.Ventral_digit", ident.2 = d("1_0.Ventral,1_1.Ventral,1_2.Ventral"), test.use = "MAST")
+y<- FindMarkers(data, ident.1 = "14.Ventral", ident.2 = d("1_0.Ventral,1_1.Ventral,1_2.Ventral"), test.use = "MAST")
+
+#jpeg(file = "D:/Data & Plots/Masters corrections/McPro vs BK volacno II.jpg", quality = 100, width = 2000, height = 2000, res = 300)
+fun.volcano(data, ident.1 = "McPro", ident.2 = d("1_0.Ventral,1_1.Ventral,1_2.Ventral"), diff.exp = x, top.genes = TRUE, num.top.genes = 5, colour.modifier = 0.85, label.repulsion = 40)+
+  theme_minimal()+
+  theme(aspect.ratio = 1)+
+  ggtitle("McPros vs volar BKs", subtitle = "McPro vs Ventral_digit BK_I, BK_II and BK_III")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+#dev.off()
+
+#jpeg(file = "D:/Data & Plots/Masters corrections/Mc vs BK volacno II.jpg", quality = 100, width = 2000, height = 2000, res = 300)
+fun.volcano(data, ident.1 = "14.Ventral", ident.2 = d("1_0.Ventral,1_1.Ventral,1_2.Ventral"), diff.exp = x, top.genes = TRUE, num.top.genes = 5, colour.modifier = 0.85)+
+  theme_minimal()+
+  theme(aspect.ratio = 1)+
+  ggtitle("Mcs vs volar BKs", subtitle = "Mc vs Ventral_digit BK_I, BK_II and BK_III")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+#dev.off()
+```
+
+```{r Tail validation}
+#### S E T  U P -------------------------------
+Idents(data)<- data$newcluster
+
+x<- FindMarkers(data, ident.1 = "McPro.Ventral_digit", ident.2 = d("BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit"), test.use = "MAST")
+y<- FindMarkers(data, ident.1 = "Mc.Ventral_digit", ident.2 = d("BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit"), test.use = "MAST")
+m<- FindMarkers(data, ident.1 = "McPro.Ventral_digit", ident.2 = d("Mc.Ventral_digit"), test.use = "MAST")
+m$genes<- row.names(m)
+
+top.x<- x[x$avg_log2FC > 0 & x$p_val_adj < 0.05,]
+top.x<- row.names(top.x)
+
+top.y<- y[y$avg_log2FC > 0 & y$p_val_adj < 0.05,]
+top.y<- row.names(top.y)
+
+z<- c(top.x,top.y)
+# only keeps duplicated values
+z<- z[duplicated(z)] 
+
+#### V E N N  D I A G R A M S -------------------------------
+library("ggVennDiagram")
+
+w<- list(top.x,top.y)
+myCol <- brewer.pal(3, "Pastel2")
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Venndiagram of Mc & McPro vs volar BKs II.jpg", plot = 
+ggVennDiagram(w, label_alpha = 0, category.names = d("McPro marker genes,Mc marker genes"), label_color = "black", label_percent_digit = 2)+
+  ggplot2::scale_colour_manual(values = d("black,black"))+
+  ggplot2::scale_fill_gradient(low = myCol[1], high = myCol[2])+
+  NoLegend()+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  text = element_text(size = 14)
+  )+
+  ggtitle("Mc and McPro markers", subtitle = "Derived from differential expression analysis to the volar BK populations")
+  
+)
+```
+
+```{r 14 validation}
+ident.v<- rev(fun.l("3_0.Ventral,3_1.Ventral,3_2.Ventral,1_0.Ventral,1_1.Ventral,1_2.Ventral,14.Ventral,4.Ventral,0_10_11.Ventral,2_8.Ventral,5.Ventral,6.Ventral,7.Ventral,9.Ventral,12.Ventral,13.Ventral,15.Ventral"))
+
+Idents(data)<- data$integrated_snn_res.0.51_sample_type
+
+#### D O T P L O T -------------------------------
+d.dotplot(data, feature = "FGFR2", ident = ident.v)+coord_flip()+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1))
+```
+
+```{r Reclustering}
+#### 1_0, 14 & T A I L -------------------------------
+Idents(data)<- data$newcluster
+n<- subset(data, idents = d("BK_I.Ventral_digit,McPro.Ventral_digit,Mc.Ventral_digit"))
+
+n<- NormalizeData(n)
+n<- FindVariableFeatures(n)
+n<- ScaleData(n, features = rownames(n))
+n<- RunPCA(n, features = VariableFeatures(n))
+
+ElbowPlot(n)
+opt.pct<- fun.pct.picker(n)
+opt.pct
+
+n<- FindNeighbors(n, dims = 1:5)
+  
+n<- RunUMAP(n, dims = 1:5)
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/Recluster A no label.jpg", plot = 
+DimPlot(n, reduction = "umap")+
+theme_minimal()+
+  theme(aspect.ratio = 1,
+        panel.background = element_rect(colour = "black", size= NULL),
+        legend.position = "none")+
+  ggtitle("UMAP projection of isolated populations", subtitle = "Mc, McPro and BK_I population reanalysed")
+#)
+
+n<- FindClusters(n, resolution = 0.5)
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/Recluster B no labels.jpg", plot = 
+DimPlot(n, reduction = "umap")+
+theme_minimal()+
+  theme(aspect.ratio = 1,
+        panel.background = element_rect(colour = "black", size= NULL),
+        legend.position = "none")+
+  ggtitle("UMAP projection of isolated populations", subtitle = "Mc, McPro and BK_I population reanalysed")
+#)
+
+#### N E W  C L U S T E R S  5 & 6 -------------------------------
+m<- subset(n, idents = d("5,6"))
+
+m<- NormalizeData(m)
+m<- FindVariableFeatures(m)
+m<- ScaleData(m, features = rownames(m))
+m<- RunPCA(m, features = VariableFeatures(m))
+
+ElbowPlot(m)
+opt.pct<- fun.pct.picker(m)
+opt.pct
+
+m<- FindNeighbors(m, dims = 1:5)
+  
+m<- RunUMAP(m, dims = 1:5)
+
+Idents(m)<- m$newcluster
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/Recluster C orig labels.jpg", plot = 
+DimPlot(m, reduction = "umap")+
+theme_minimal()+
+  theme(aspect.ratio = 1,
+        panel.background = element_rect(colour = "black", size= NULL))+
+  ggtitle("UMAP projection of isolated populations", subtitle = "Mc and associated populations (5 and 6) reanalysed")
+#)
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/MC-BK gradient A.jpg", plot = 
+fun.ggplot.feature(m, feature = "KRT20")
+#)
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/MC-BK gradient B.jpg", plot = 
+fun.ggplot.feature(m, feature = "KRT14")
+#)
+```
+
+```{r adding the new idents}
+a.1_0<- WhichCells(data, idents = "1_0.Ventral")
+a.0<- WhichCells(m, idents = "0")
+a.1<- WhichCells(m, idents = "1")
+a.2<- WhichCells(m, idents = "2")
+a.3<- WhichCells(m, idents = "3")
+
+data$m.clus<- ifelse(names(data$nCount_RNA) %in% a.0, "new.0",
+              ifelse(names(data$nCount_RNA) %in% a.1, "new.1",
+              ifelse(names(data$nCount_RNA) %in% a.2, "new.2",
+              ifelse(names(data$nCount_RNA) %in% a.3, "new.3",
+              ifelse(names(data$nCount_RNA) %in% a.1_0, "1_0.Ventral", NA)))))
+
+Idents(data)<- "m.clus"
+DimPlot(data)
+```
+
+```{r Progenitors}
+#### D E ------------------------------- 
+x<- FindMarkers(m, ident.1 = "2", test.use = "MAST")
+x$genes<- row.names(x)
+fun.volcano(m, ident.1 = "2", top.genes = TRUE, diff.exp = x)
+
+#### C E L L  C Y C L E -------------------------------
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+m<- CellCycleScoring(m, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+DimPlot(m, label = TRUE, label.box = TRUE, repel = TRUE)
+# looks good! -> add the idents from before to 'data' such that can confirm if '2' really is the least mature
+```
+
+```{r Pseudotime analysis}
+#### O L D  I D E N T S -------------------------------
+Idents(data)<- data$newcluster
+p<- subset(data, idents = d("BK_I.Ventral_digit,McPro.Ventral_digit,Mc.Ventral_digit"))
+
+p<- NormalizeData(p)
+p<- FindVariableFeatures(p)
+p<- ScaleData(p, features = rownames(p))
+p<- RunPCA(p)
+
+sce <- as.SingleCellExperiment(p)
+sce <- slingshot(sce, clusterLabels = "ident", reducedDim = "PCA", allow.breaks = FALSE, end.clus = "Mc.Ventral_digit") 
+
+z<- sce$slingshot 
+z@metadata$lineages
+
+#### B Y  C L U S T E R -------------------------------
+library(Polychrome)
+library(ggbeeswarm)
+library(ggthemes)
+
+gene<- FetchData(p, vars = "KRT20")
+
+df <- data.frame(sce$m.clus,sce$slingPseudotime_1, gene, sce$sample_type)
+names(df)[1]<- "ident"
+names(df)[2]<- "time"
+names(df)[3]<- "KRT20_expression"
+names(df)[4]<- "sample_type"
+
+#### R E O R D E R I N G -------------------------------
+order<- rev(d("1,2,3,4,5,6,7,8,9"))
+
+x<- df$ident
+x<- x[!duplicated(x)]
+current<- x
+
+df$order<- as.character(df$ident)
+df$order<- factor(df$order, levels = current)
+levels(df$order)<- order
+
+ggplot(df, aes(x = time, y = reorder(ident, order), colour = ident))+
+  geom_quasirandom(groupOnX = FALSE, size = 3)+
+  theme_minimal()+
+  theme(text = element_text(size = 20))
+
+#### N O R M A L -------------------------------
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/Pseudoplot.jpg", plot = 
+fun.pseudoplot(p, feature = "SOX2,ISL1,KRT20,BEST3,CCER2", points = 0)+
+  theme_minimal()+
+  theme(aspect.ratio = 1,
+        panel.background = element_rect(colour = "black", size= NULL))+
+  ggtitle("Plotting gene expression over pseudotime", subtitle = "Pseudotime ordering: BK_I, McPro and Mc")
+#)
+```
+```{r UMAP pseudotime colours}
+p[["Pseudotime_order"]]<- sce$slingPseudotime_1
+
+x<- FetchData(p, vars = "UMAP_1")
+y<- FetchData(p, vars = "UMAP_2")
+z<- FetchData(p, vars = "Pseudotime_order")
+w<- FetchData(p, vars = "newcluster")
+
+df<- data.frame(x,y,z,w)
+names(df)[3]<- "Pseudotime_order"
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/UMAP_pseudoplot.jpg", plot = 
+ggplot(df, aes(x = UMAP_1, y = UMAP_2, colour = Pseudotime_order))+
+  geom_point()+
+  xlim(-5,5)+
+  ylim(2.5,8)+
+  scale_colour_gradientn(colors = rev(brewer.pal(10,"RdBu")))+
+  theme_minimal()+
+  theme(aspect.ratio = 1,
+        panel.background = element_rect(colour = "black", size= NULL))+
+  ggtitle("UMAP of BK_I, McPro and Mc", subtitle = "Coloured by the pseudotime order of each cell")
+)
+```
+ 
+```{r Early gene heatmaps}
+Idents(p)<- p$m.clus
+#x<- FindMarkers(p, ident.1 = "new.2", ident.2 = d("new.0,new.1,new.3,1_0.Ventral"), test.use = "MAST")
+#x<- FindMarkers(p ,ident.1 = d("new.0,new.1,new.3"), ident.2 = "1_0.Ventral", test.use = "MAST")
+x<- FindMarkers(p, ident.1 = "1_0.Ventral", ident.2 = d("new.0,new.1,new.2,new.3"), test.use = "MAST")
+  
+  top.genes<- data.frame(x[order(x$avg_log2FC, decreasing = TRUE),])
+  top.genes<- top.genes[top.genes$avg_log2FC > 0 & top.genes$p_val_adj < 0.05,]
+  top.genes<- row.names(top.genes)
+  
+genes<- FetchData(p, vars = top.genes[1:200])
+time<- sce$slingPseudotime_1
+ident<- p$m.clus
+
+df<- data.frame(genes,time,ident)
+#df<- na.omit(df)
+df<- df[order(df$time, decreasing = TRUE),]
+df$order<- rev(seq_along(df$time))
+df$time<- round(df$time,2)
+df<- melt(df, id.vars = d("time,order,ident"))
+
+#### H E A T M A P -------------------------------
+ggplot(df, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))
+#Even 2, which looks like it could have been progentor has no real specific marker gene not shared with the terminal Mc -> no Marker genes, probably neeeds more Mc/progenitors to have them seperate out in the snSeq data... (basicially I can't find them at the momment but it does seem as though they are in there ):
+```
+
+```{r doo doo heatmaps}
+#### S I D E  C O L O U R S -------------------------------
+df<- data.frame(genes,time,ident)
+#df<- na.omit(df)
+df<- df[order(df$time, decreasing = TRUE),]
+df$order<- rev(seq_along(df$time))
+df$time<- round(df$time,2)
+df<- melt(df, id.vars = d("time,order,ident"))
+
+x<- df$ident
+x<- x[!duplicated(x)]
+current<- x
+
+side.cols<- brewer.pal(length(x), "Pastel2")
+
+df$side.cols<- as.character(df$ident)
+df$side.cols<- factor(df$side.cols, levels = current)
+levels(df$side.cols)<- side.cols
+
+ggplot(df, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))+
+
+ggplot(df, aes(x = reorder(time, order), y = ident, fill = side.cols))+
+  geom_tile()+
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r signalling networks CELLCHAT Mc_Back}
+#### Ventral epidermis only ####
+Idents(data)<- data$newcluster
+
+my.data<- subset(data, idents = d("BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit,McPro.Ventral_digit,Mc.Ventral_digit"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+```
+
+```{r signalling networks CELLCHAT BK}
+#### Back epidermis only ####
+Idents(data)<- data$new.idents.0.51_sample_type
+
+my.data<- subset(data, idents = d("BK_I.Back_skin,BK_II.Back_skin,BK_III.Back_skin"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+```
+
+```{r CELLCHAT plots Mc, fig.height=4, fig.width= 5}
+#pdf(height = 6, width = 7, file = "F:/MASTERS/mouse sn data/Cameron's analysis/Thesis figures/Merkel and cluster 1 cellchat.pdf")
+groupSize <- as.numeric(table(my.data@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(my.data@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(my.data@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+#bubble plot
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/Bubble plot BACK.jpg", plot = 
+netVisual_bubble(my.data, remove.isolate = FALSE)+
+  ggtitle("Potential ligand-receptor interactions within the haired basal epidermis",
+          subtitle = "BK_I, BK_II, BK_III")+
+  theme(aspect.ratio = 1)+
+  coord_flip()
+#)
+
+#ligand/receptor contributions plot
+netAnalysis_contribution(my.data, signaling = "WNT")
+netAnalysis_contribution(my.data, signaling = "SEMA3")
+
+#signaling heatmap
+my.data<- netAnalysis_computeCentrality(my.data, slot.name = "netP") 
+x<- 6
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/Signaling heatmap VENTRAL.jpg", width = 2100, plot = 
+netAnalysis_signalingRole_heatmap(my.data, pattern = "outgoing", width = x, height = x, color.heatmap = "YlGnBu")+
+netAnalysis_signalingRole_heatmap(my.data, pattern = "incoming", width = x, height = x, color.heatmap = "YlGnBu")
+)
+#dev.off()
+
+#outgoing
+selectK(my.data, pattern = "outgoing")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "outgoing", k = nPatterns)
+    netAnalysis_river(my.data, pattern = "outgoing")
+    netAnalysis_dot(my.data, pattern = "outgoing")
+
+#incoming
+selectK(my.data, pattern = "incoming")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "incoming", k = nPatterns)
+    netAnalysis_river(my.data, pattern = "incoming")
+    netAnalysis_dot(my.data, pattern = "incoming")
+```
+
+```{r ERBB4-NRG3 dotplots 10/3/23}
+Idents(data)<- data$new.idents.0.51_sample_type
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/ERBB4-NRG3 dotplot VENTRAL.jpg", plot = 
+d.dotplot(data, feature = "ERBB4,NRG3", 
+          ident = rev(d("3.Ventral_digit,BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit,Mc.Ventral_digit,Dermis_I.Ventral_digit,Dermis_II.Ventral_digit,Dermis_III.Ventral_digit,Dermis_IV.Ventral_digit,Dermis_V.Ventral_digit,Dermis_VI.Ventral_digit,5.Ventral_digit,6.Ventral_digit,7.Ventral_digit,9.Ventral_digit,12.Ventral_digit,13.Ventral_digit,15.Ventral_digit")),
+          split.by = "sample_type")+
+  theme(aspect.ratio = 1.8)+
+  ggtitle("Volar populations")
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Merkel cells/ERBB4-NRG3 dotplot BACK.jpg", plot = 
+d.dotplot(data, feature = "ERBB4,NRG3", 
+          ident = rev(d("3.Back_skin,BK_I.Back_skin,BK_II.Back_skin,BK_III.Back_skin,Mc,Dermis_I.Back_skin,Dermis_II.Back_skin,Dermis_III.Back_skin,Dermis_IV.Back_skin,Dermis_V.Back_skin,Dermis_VI.Back_skin,5.Back_skin,6.Back_skin,7.Back_skin,9.Back_skin,12.Back_skin,13.Back_skin,15.Back_skin")),
+          split.by = "sample_type")+
+  theme(aspect.ratio = 1.8)+
+  ggtitle("Haired populations")
+)
+```
+
+#### Epidermal analysis ####
+```{r Differential expression 07.04.23}
+Idents(data)<- data$new.idents.0.51_sample_type
+
+v<- FindMarkers(data, ident.1 = "BK_III.Ventral_digit", test.use = "MAST")
+b<- FindMarkers(data, ident.1 = "BK_III.Back_skin", test.use = "MAST")
+
+x<- FindMarkers(data, ident.1 = "BK_III.Ventral_digit", ident.2 = "BK_III.Back_skin", test.use = "MAST")
+#write.csv(b, file = "D:/Data & Plots/Masters corrections/Differential expression/BK III BACK vs all MAST 07.04.23.csv")
+```
+
+```{r Volcano plots 07.04.23}
+fun.volcano(data, ident.1 = "BK_III.Ventral_digit", 
+            diff.exp = v, 
+            colour.modifier = 1.3, top.genes = "l", num.top.genes = 5,colour.signiff = "#F28C28")+
+  theme_minimal()+
+   theme(aspect.ratio = 1)+
+  ggtitle("Volar BK_III", subtitle = "BK_III.Ventral_digit vs all other populations")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+  
+fun.volcano(data, ident.1 = "BK_III.Back_skin", 
+            diff.exp = b, 
+            colour.modifier = 1.3, top.genes = "l", num.top.genes = 5,colour.signiff = "#F28C28")+
+  theme_minimal()+
+   theme(aspect.ratio = 1)+
+  ggtitle("Haired BK_III", subtitle = "BK_III.Back_skin vs all other populations")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+
+fun.volcano(data, ident.1 = "BK_III.Ventral_digit", 
+            diff.exp = x, 
+            colour.modifier = 0.8, top.genes = "l", num.top.genes = 3, label.genes = "PTCH1,PTCH2,LEF1,TCF4")+
+  theme_minimal()+
+   theme(aspect.ratio = 1)+
+  ggtitle("Volar BK_III VS Haired BK_III", subtitle = "BK_III.Ventral_digit vs all BK_III.Back_skin")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+```
+
+```{r Nuceli number barcharts 12.04.23}
+Idents(data)<- data$new.idents.0.51
+bk<- subset(data, idents = d("BK_I,BK_II,BK_III"))
+
+df<- data.frame(table(bk$new.idents.0.51, bk$new.sample_type))
+names(df)[1]<- "Cluster"
+names(df)[2]<- "Skin_region"
+names(df)[3]<- "Number_of_nuclei"
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/Nuclei counts barchart 12.04.23.jpg", plot = 
+ggplot(df, aes(x = Cluster, y = Number_of_nuclei, fill = Skin_region))+
+  geom_bar(stat = "identity", alpha = 1, position = "dodge")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Pastel1", direction = -1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 1
+  )+
+  ggtitle("Nuclei counts between skin regions", subtitle = "Comparison between the basal epidermal populations")
+#)
+```
+
+```{r Bk populations plot 12.04.23}
+p<- DimPlot(bk)
+p
+selection<- CellSelector(plot = p)
+bk[["take"]]<- ifelse(names(bk$nCount_RNA) %in% selection, "take", NA)
+Idents(bk)<- bk$take
+bk<- subset(bk, idents = "take")
+Idents(bk)<- bk$new.idents.0.51_sample_type
+
+# plotting #
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/BK dimplot 12.04.23.jpg", plot = 
+DimPlot(bk)+
+  theme_minimal()+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 1
+  )+
+  ggtitle("BK populations", subtitle = "All skin regions combined")
+)
+ 
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/BK dimplot split 12.04.23.jpg", plot = 
+DimPlot(bk, split.by = "new.sample_type")+
+    theme_minimal()+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL),
+  aspect.ratio = 1
+  )+
+  ggtitle("BK populations", subtitle = "Split by skin regions")
+)
+```
+
+```{r Placode signal dotplots 13.04.23}
+Idents(data)<- data$new.idents.0.51
+placode.genes<- d("LEF1,CTNNB1,AXIN2,SHH,PTCH1,PTCH2,EDAR,EDA,FGF20,SPRY4")
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/placode signaling violin plots A 13.04.23.jpg", plot = 
+VlnPlot(data, features = placode.genes[1:6], idents = d("BK_I,BK_II,BK_III"), stack = TRUE, split.by = "new.sample_type")+
+  theme_minimal()+ NoLegend()+
+  theme(aspect.ratio = 3)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  ggtitle("Placode signaling", subtitle = "Between basal epidermal populations")
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/placode signaling violin plots B 13.04.23.jpg", plot = 
+VlnPlot(data, features = placode.genes[7:10], idents = d("BK_I,BK_II,BK_III"), stack = TRUE, split.by = "new.sample_type")+
+  theme_minimal()+ 
+  theme(aspect.ratio = 3)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  ggtitle("Placode signaling", subtitle = "Between basal epidermal populations")
+)
+
+d.dotplot(data, ident = "BK_I,BK_II,BK_III", feature = placode.genes, )
+```
+
+```{r TGFA feature plot 13.04.23}
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/TGFA feature plot split 13.04.23.jpg", plot = 
+fun.ggplot.feature(data, feature = "TGFA", split.by = "new.sample_type")
+#)
+```
+
+```{r data preperation, fig.height=5, fig.width=9}
+#data<- readRDS(file = "K:/headon_grp/roslin_bioinformatics/2021-10-27-_9767_-Denis_Headon_snRNAseq_skin_3regions/documentation/20220513_pseudotime_keratinocytes/slingshot_noFilt_ccRegress_c1c3c14_noContClusters_withBack/obj_slingshot.rds")
+Idents(data)<- data$integrated_snn_res.0.51
+data<- subset(data, idents = d("1_0,1_1,1_2,3_0,3_1,3_2,14"))
+
+#downsampling the ventral component only (to have roughly as many cells as in the back)
+Idents(data)<- "sample_type"
+ventral<- subset(data, idents = "Ventral")
+data<- subset(data, idents = "ventral", invert = TRUE)
+ventral<- ventral[, sample(colnames(ventral), size = 400, replace = FALSE)]
+data<- merge(data, y= ventral, merge.data = TRUE)
+```
+
+```{r similarity dimplot, fig.height=6, fig.width=6}
+#### on just BKs ####
+Idents(data)<- "sample_type"
+
+data<- NormalizeData(data)
+data<- FindVariableFeatures(data)
+data<- ScaleData(data, features = rownames(data))
+data<- RunPCA(data)
+
+ElbowPlot(data)
+
+data<- RunUMAP(data, dims = 1:10)
+DimPlot(data, reduction = "pca")+
+  theme_minimal()
+
+x<- FetchData(data, vars = "PC_1")
+y<- FetchData(data, vars = "PC_2")
+z<- FetchData(data, vars = "sample_type")
+df<- data.frame(x,y,z)
+
+ggplot(df, aes(x = PC_1, y = PC_2, colour = sample_type))+
+  geom_point(alpha = 0.4)+
+  theme_minimal()
+
+#### om whole data ####
+x<- FetchData(data, vars = "UMAP_1")
+y<- FetchData(data, vars = "UMAP_2")
+z<- FetchData(data, vars = "sample_type")
+df<- data.frame(x,y,z)
+
+ggplot(df, aes(x = UMAP_1, y = UMAP_2, colour = sample_type))+
+  geom_point(alpha = 0.4, size = 0.2)+
+  theme_minimal()
+```
+
+```{r similarity quantification}
+#### Ventral Back  conservation ####
+Idents(data)<- data$integrated_snn_res.0.51
+test<- subset(data, idents = "1_2")
+Idents(test)<- "sample_type"
+test<- subset(test, idents = d("Ventral,Back"))
+Idents(test)<- test$integrated_snn_res.0.51
+
+#x<- FindConservedMarkers(test, ident.1 = "1_2", grouping.var = "sample_type")
+Idents(data)<- data$integrated_snn_res.0.51_sample_type
+x<- FindMarkers(data, ident.1 = "1_2.Back", ident.2 = "1_2.Ventral", test.use = "MAST")
+
+y<- x[x$p_val_adj < 0.05,]
+
+z<- AverageExpression(test)
+z<- z$RNA
+z<- data.frame(z)
+z$genes<- rownames(z)
+z<- melt(z, id.vars = "genes")
+
+z<- z[z$value > 0,]
+w<- z$genes
+w<- w[!duplicated(w)]
+paste(round(length(y[,1])/length(w)*100,3),"% of genes are differentially expressed", sep = "")
+length(x[,1])
+#22,994 genes expressed in 1_2 back and ventral
+#1,062 differemtially expressed genes thus 4.61% of genes are significantly differentially expressed, or 95.38% are similarly expressed
+
+#### Dorsal Back conservation ####
+#what about %conserved between dorsal and back
+Idents(data)<- data$integrated_snn_res.0.51
+test<- subset(data, idents = "1_2")
+Idents(test)<- "sample_type"
+test<- subset(test, idents = d("Dorsal,Back"))
+Idents(test)<- test$integrated_snn_res.0.51
+
+Idents(data)<- data$integrated_snn_res.0.51_sample_type
+x<- FindMarkers(data, ident.1 = "1_2.Back", ident.2 = "1_2.Dorsal", test.use = "MAST")
+
+y<- x[x$p_val_adj < 0.05,]
+
+z<- AverageExpression(test)
+z<- z$RNA
+z<- data.frame(z)
+z$genes<- rownames(z)
+z<- melt(z, id.vars = "genes")
+
+z<- z[z$value > 0,]
+w<- z$genes
+w<- w[!duplicated(w)]
+paste(round(length(y[,1])/length(w)*100,3),"% of genes are differentially expressed", sep = "")
+length(x[,1])
+
+#### Ventral dorsal conservation ####
+Idents(data)<- data$integrated_snn_res.0.51
+test<- subset(data, idents = "1_2")
+Idents(test)<- "sample_type"
+test<- subset(test, idents = d("Ventral,Dorsal"))
+Idents(test)<- test$integrated_snn_res.0.51
+
+Idents(data)<- data$integrated_snn_res.0.51_sample_type
+x<- FindMarkers(data, ident.1 = "1_2.Ventral", ident.2 = "1_2.Dorsal", test.use = "MAST")
+
+y<- x[x$p_val_adj < 0.05,]
+
+z<- AverageExpression(test)
+z<- z$RNA
+z<- data.frame(z)
+z$genes<- rownames(z)
+z<- melt(z, id.vars = "genes")
+
+z<- z[z$value > 0,]
+w<- z$genes
+w<- w[!duplicated(w)]
+paste(round(length(y[,1])/length(w)*100,3),"% of genes are differentially expressed", sep = "")
+length(x[,1])
+```
+
+```{r cell counts bar chat}
+df<- data.frame(table(data$integrated_snn_res.0.51_sample_type, data$integrated_snn_res.0.51, data$sample_type))
+df<- df[df$Var1 == "1_2.Back" | df$Var1 == "1_2.Dorsal" | df$Var1 == "1_2.Ventral" |
+        df$Var1 == "1_1.Back" | df$Var1 == "1_1.Dorsal" | df$Var1 == "1_1.Ventral" |
+        df$Var1 == "1_0.Back" | df$Var1 == "1_0.Dorsal" | df$Var1 == "1_0.Ventral",]
+df<- df[df$Freq > 0,]
+
+names(df)[3]<- "Sample_type"
+
+ggplot(df, aes(x = Var2, y = Freq, fill = Sample_type))+
+  geom_bar(stat = "identity", alpha = 1, position = "dodge")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.8))+
+  xlab("Basal epidermal clusters")+
+  ylab("Number of nuclei")+
+  ggtitle("Counts of nuceli across the basal epidermal populations")+
+  scale_fill_brewer(palette = "Pastel1", direction = -1)
+```
+
+```{r comparative analysis between equivelent basal epidermal populations, error=FALSE,warning=FALSE,message=FALSE}
+#### dotplots ####
+bmps<- c("BMP2","BMP4","BMP5","BMP7","NOG","SMAD6","SMAD7","CTGF","BAMBI","GREM1","GREM2","CHRD","FST","ID1","ID2","ID3","MSX1","MSX2","VENT2")
+fgfs<- c("FGF2","FGF7","FGF12","FGF13","FGF18","SPRY1","SPRY2","SPRY4","DUSP6","ETV5","FGFR1","FGFR2","FGFR3")
+wnts<- c("WNT2","WNT3","WNT3A","WNT5A","WNT5B","WNT7A","WNT16","AXIN2","FZ7","LGR4","LGR6","TCF1","LRP4","LRP6","NKD1","DKK1","DKK2","LEF1","TWIST1","TWIST2","KREMEN1","KREMEN2","SMARCAD1")
+
+ident.v<- fun.l("3_0.Ventral,3_1.Ventral,3_2.Ventral,1_0.Ventral,1_1.Ventral,1_2.Ventral,14.Ventral,4.Ventral,0_10_11.Ventral,2_8.Ventral,5.Ventral,6.Ventral,7.Ventral,9.Ventral,12.Ventral,13.Ventral,15.Ventral")
+ident.b<- fun.l("3_0.Back,3_1.Back,3_2.Back,1_0.Back,1_1.Back,1_2.Back,14.Back,4.Back,0_10_11.Back,2_8.Back,5.Back,6.Back,7.Back,9.Back,12.Back,13.Back,15.Back")
+ident.d<- fun.l("3_0.Dorsal,3_1.Dorsal,3_2.Dorsal,1_0.Dorsal,1_1.Dorsal,1_2.Dorsal,14.Dorsal,4.Dorsal,0_10_11.Dorsal,2_8.Dorsal,5.Dorsal,6.Dorsal,7.Dorsal,9.Dorsal,12.Dorsal,13.Dorsal,15.Dorsal")
+
+short.ident.v<- fun.l("3_0.Ventral,3_1.Ventral,3_2.Ventral,1_0.Ventral,1_1.Ventral,1_2.Ventral")
+short.ident.b<- fun.l("3_0.Back,3_1.Back,3_2.Back,1_0.Back,1_1.Back,1_2.Back")
+short.ident.d<- fun.l("3_0.Dorsal,3_1.Dorsal,3_2.Dorsal,1_0.Dorsal,1_1.Dorsal,1_2.Dorsal")
+
+genes<- list(bmps,fgfs,wnts,bmps,fgfs,wnts,bmps,fgfs,wnts)
+identities<- list(ident.v,ident.v,ident.v,ident.d,ident.d,ident.d,ident.b,ident.b,ident.b)
+short.ident<- list(short.ident.v,short.ident.v,short.ident.v,short.ident.d,short.ident.d,short.ident.d,short.ident.b,short.ident.b,short.ident.b)
+
+d.dotplot(data, ident = ident.v, feature = "KRT10,KRT14,FGF20")+
+  d.dotplot(data, ident = ident.b, feature = "KRT10,KRT14,FGF20")
+
+for(i in seq_along(identities)){
+  print(i)
+  print(d.dotplot(data, feature = genes[[i]], ident = identities[[i]]))
+  if(i == length(identities)){
+    for(i in seq_along(short.ident)){
+       print(i)
+       print(d.dotplot(data, feature = genes[[i]], ident = short.ident[[i]]))
+    }
+  }
+}
+#### differential expression ####
+shorter.ident.v<- d("1_0.Ventral,1_1.Ventral,1_2.Ventral,3_0.Ventral,3_1.Ventral,3_2.Ventral")
+shorter.ident.b<- d("1_0.Back,1_1.Back,1_2.Back,3_0.Back,3_1.Back,3_2.Back")
+shorter.ident.d<- d("1_0.Dorsal,1_1.Dorsal,1_2.Dorsal,3_0.Dorsal,3_1.Dorsal,3_2.Dorsal")
+
+#where expand.grid() checks every permutation between two vectors
+ventral_back<- expand.grid(shorter.ident.v,shorter.ident.b)
+dorsal_back<- expand.grid(shorter.ident.d,shorter.ident.b)
+
+for(i in seq_along(ventral_back[,1])){
+  print(i)
+  write.csv(FindMarkers(data, ident.1 = ventral_back[i,1], ident.2 = ventral_back[i,2], test.use = "MAST"), file = paste("M:/Thesis Figures/Epidermal DE/",ventral_back[i,2]," VS ",ventral_back[i,2],".csv"))
+  
+  write.csv(FindMarkers(data, ident.1 = dorsal_back[i,1], ident.2 = dorsal_back[i,2], test.use = "MAST"), file = paste("M:/Thesis Figures/Epidermal DE/",dorsal_back[i,2]," VS ",dorsal_back[i,2],".csv"))
+            
+    if(i == length(ventral_back[,1])){
+      for(i in seq_along(shorter.ident.v)){
+        write.csv(FindMarkers(data, ident.1 = shorter.ident.v[i], test.use = "MAST"), file = "M:/Thesis Figures/Epidermal DE/",short.ident.v[i]," VS epi.csv")
+        write.csv(FindMarkers(data, ident.1 = shorter.ident.b[i], test.use = "MAST"), file = "M:/Thesis Figures/Epidermal DE/",short.ident.b[i]," VS epi.csv")
+        write.csv(FindMarkers(data, ident.1 = shorter.ident.d[i], test.use = "MAST"), file = "M:/Thesis Figures/Epidermal DE/",short.ident.d[i]," VS epi.csv")
+      }
+    }
+}
+#### volcano plots ####
+v<- d("1_0.Ventral,1_1.Ventral,1_2.Ventral")
+b<- d("1_0.Back,1_1.Back,1_2.Back")
+
+for(i in seq_along(v)){
+  print(i)
+  print(fun.volcano(data, ident.1 = v[i], ident.2 = b[i], top.genes = TRUE))
+}
+
+fun.volcano(data, ident.1 = "1_2.Ventral", ident.2 = "1_2.Back", label.gene = )
+```
+
+```{r SHH and TGFA plots, fig.height=3.5,fig.width=6.2}
+Idents(data)<- data$integrated_snn_res.0.5
+epi<- subset(data, idents = "1")
+Idents(epi)<- epi$integrated_snn_res.0.51_sample_type
+
+wnts<- c("SHH","PTCH1","WNT2","WNT3","WNT3A","WNT5A","WNT5B","WNT7A","WNT16","AXIN2","FZ7","LGR4","LGR6","TCF1","LRP4","LRP6","NKD1","DKK1","DKK2","LEF1","TWIST1","TWIST2","KREMEN1","KREMEN2","SMARCAD1")
+
+##### D O T P L O T -------------------------------
+d.dotplot(epi, feature = "SHH,PTCH1,TGFA,EGFR", ident = rev(levels(epi)))+coord_flip()+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1))
+
+d.dotplot(data, feature = wnts, ident = "1_2.Dorsal,1_2.Back,1_2.Ventral")+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1))
+#### V O L C A N O -------------------------------
+x<- FindMarkers(data, ident.1 = "1_2.Ventral", ident.2 = "1_2.Back", test.use = "MAST")
+fun.volcano(data, ident.1 = "1_2.Ventral", ident.2 = "1_2.Back", label.genes = "LGR4,NRG3,TGFA,SHH", diff.exp = x)+
+  theme_minimal()
+
+#### F E A T U R E  P L O T -------------------------------
+d.ggfeatureplot(data, feature = "TGFA,FGF20", split.by = "sample_type")
+```
+
+```{r TFGA and VIP}
+ident.v<- fun.l("3_0.Ventral,3_1.Ventral,3_2.Ventral,1_0.Ventral,1_1.Ventral,1_2.Ventral,14.Ventral,4.Ventral,0_10_11.Ventral,2_8.Ventral,5.Ventral,6.Ventral,7.Ventral,9.Ventral,12.Ventral,13.Ventral,15.Ventral")
+ident.b<- fun.l("3_0.Back,3_1.Back,3_2.Back,1_0.Back,1_1.Back,1_2.Back,14.Back,4.Back,0_10_11.Back,2_8.Back,5.Back,6.Back,7.Back,9.Back,12.Back,13.Back,15.Back")
+
+d.ggfeatureplot(data, feature = "TGFA", split.by = "sample_type")
+
+d.dotplot(data, feature = "VIP,VIPR1,VIPR2", ident = ident.v)+coord_flip()+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1))
+
+d.dotplot(data, feature = "VIP,VIPR1,VIPR2", ident = ident.b)+coord_flip()+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1.1, vjust = 1.1))
+```
+
+```{r pseudotime of the epidermis, fig.height=6, fig.width=12, error=FALSE,warning=FALSE,message=FALSE}
+data<- NormalizeData(data)
+data<- FindVariableFeatures(data)
+data<- ScaleData(data, features = rownames(data))
+data<- RunPCA(data)
+
+sce <- as.SingleCellExperiment(data)
+sce <- slingshot(sce, clusterLabels = "ident", reducedDim = "PCA", allow.breaks = FALSE, start.clus = "1_0") 
+
+z<- sce$slingshot 
+z@metadata$lineages
+
+fun.pseudoplot(data, feature = "CSMD2", split.by = "sample_type", points = 0)
+```
+
+```{r pseudotime heatmaps}
+#using differential expression of 1_2.Back vs the rest of the back basal keratinocytes 
+```
+
+```{r signalling networks BK ventral CELLCHAT}
+#### Ventral epidermis only ####
+Idents(data)<- data$new.idents.0.51_sample_type
+
+my.data<- subset(data, idents = d("BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+
+#### Epidermis and dermis ####
+```
+
+```{r signalling networks BKJ Back CELLCHAT}
+#### Back epidermis only ####
+Idents(data)<- data$new.idents.0.51_sample_type
+
+my.data<- subset(data, idents = d("BK_I.Back_skin,BK_II.Back_skin,BK_III.Back_skin"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+```
+
+```{r CELLCHAT plots Epidermis, fig.height=6, fig.width= 7}
+#pdf(height = 6, width = 7, file = "F:/MASTERS/mouse sn data/Cameron's analysis/Thesis figures/Back cluster 1 cellchat.pdf")
+groupSize <- as.numeric(table(my.data@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(my.data@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(my.data@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+#bubble plot
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/Back BK bubble plot 10.04.23.jpg", plot = 
+netVisual_bubble(my.data, remove.isolate = FALSE)
+)
+
+#ligand/receptor contributions plot
+netAnalysis_contribution(my.data, signaling = "EDA")
+netAnalysis_contribution(my.data, signaling = "VISFATIN")
+
+#signaling heatmap
+my.data<- netAnalysis_computeCentrality(my.data, slot.name = "netP") 
+x<- 6
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Epidermis/Back BK heatmap 10.04.23.jpg", width = 2100, plot = 
+netAnalysis_signalingRole_heatmap(my.data, pattern = "outgoing", width = x, height = x, color.heatmap = "YlGnBu")+
+netAnalysis_signalingRole_heatmap(my.data, pattern = "incoming", width = x, height = x, color.heatmap = "YlGnBu")
+#)
+#dev.off()
+
+#outgoing
+selectK(my.data, pattern = "outgoing")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "outgoing", k = nPatterns)
+    netAnalysis_river(my.data, pattern = "outgoing")
+    netAnalysis_dot(my.data, pattern = "outgoing")
+
+#incoming
+selectK(my.data, pattern = "incoming")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "incoming", k = nPatterns)
+    netAnalysis_river(my.data, pattern = "incoming")
+    netAnalysis_dot(my.data, pattern = "incoming")
+```
+
+#### Dermal condensate analysis ####
+```{r cell cycle scoring Dc 22/03/23}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+data<- CellCycleScoring(data, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+### seeing the percentage of Dermis_I that is not replicating ###
+data[["cell_cycle.new.idents"]]<- paste(data$new.idents.0.51_sample_type, data$Phase)
+table(data$new.idents.0.51_sample_type)
+table(data$cell_cycle.new.idents)
+```
+
+```{r dotplots between the Back dermal clusters 24/03/23}
+shh<- d("PTCH1,PTCH2,GLI3")
+wnt<- d("AXIN2,LEF1")
+fgf20<- d("FGFR1,FGFR2,FGFR3,ETV5,SPRY4")
+dc<- d("SOX2,BMP7")
+
+ident.b<- d("FB_VI.Back_skin,FB_V.Back_skin,FB_IV.Back_skin,FB_III.Back_skin,FB_II.Back_skin,FB_I.Back_skin")
+ident.v<- d("FB_VI.Ventral_digit,FB_V.Ventral_digit,FB_IV.Ventral_digit,FB_III.Ventral_digit,FB_II.Ventral_digit,FB_I.Ventral_digit")
+
+fun.dotplot<- function(data, feature, ident, cols, split.by){
+  
+  feature<- fun.l(feature)
+  
+  #need to have a complete list of idents to work, so adds the missing ones (checks the whole ident vector vs the ident vector) back but orders the specified ones
+  ident<- fun.l(ident)
+  whole.ident<- levels(data)
+  x<- ident
+  if(!all(x == whole.ident)){x<- append(x, whole.ident)}
+  x<- x[!duplicated(x)]
+  data@active.ident<- factor(data@active.ident, levels = x)
+  
+  #for generting the plot titles
+  w<- strsplit(ident, "[.]") # sqaure brackets to allow me to split by "." as otherwise "." is treated as any character
+  w<- unlist(w)
+  
+  #checks more than just the first ident location: splits the string vector, takes only the even number (back/dorsal...), deletes duplicated values and reoders the string with "&" 
+  x = 0
+  w.II<- NULL
+ 
+  n<- 1:length(w)
+  n<- subset(n, n %% 2 == 0)
+
+  for(i in seq_along(n)){w.II<- append(w.II,w[n[i]])}
+  w.II<- w.II[!duplicated(w.II)]
+ 
+  n<- seq_along(w.II)
+  if(sum(n)>1){
+  #bad fix, to be more robust implement inside a for loop
+     t<- paste(w.II, w.II[1], sep = " & ")
+     if(sum(n) > 3){ t<- paste(t[2], w.II[3], sep = " & ")}else{t<- t[2]}
+   
+  }else{t = w.II[1]}
+  
+  if(missing(cols)){cols = fun.l("#3983A0,white,red")}else{cols<- fun.l(cols)}
+  
+  DotPlot(object = data, features = feature, idents = ident, dot.scale = 7, col.min = -1, col.max = 1.5, dot.min = 0, scale.max = 100) + 
+  scale_colour_gradient2(low = cols[1], mid = cols[2], high = cols[3])+
+  scale_shape_manual(values = "grey")+#outline code
+  theme_bw()+
+  theme(panel.grid= element_blank(),
+        panel.background = element_rect(colour = "black", size= NULL),
+        axis.text.x = element_text(angle = 90))+
+  labs(title = t)+
+  geom_point(aes(size=pct.exp), shape = 21, colour="#525659", stroke=0.5)
+  
+}
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/dotplot.shh.jpg", width = 1400, plot = 
+  fun.dotplot(data, feature = shh, ident = ident.b)+
+  theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45))+
+  ggtitle("SHH signaling")
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/dotplot.wnt.jpg", width = 1000, plot = 
+  fun.dotplot(data, feature = wnt, ident = ident.b)+
+  theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), axis.text.y=element_blank())+
+   labs(y = NULL)+
+   ggtitle("WNT signaling")
+)
+  
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/dotplot.fgf20.jpg", width = 1400, plot = 
+  fun.dotplot(data, feature = fgf20, ident = ident.b)+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), axis.text.y=element_blank())+
+   labs(y = NULL)+
+  ggtitle("FGF20 signaling")
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/dotplot.dc.jpg", width = 1000, plot = 
+  fun.dotplot(data, feature = dc, ident = ident.b)+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), axis.text.y=element_blank())+
+   labs(y = NULL)+
+   ggtitle("Dc associated genes")
+)
+```
+
+```{r dotplots between the ventral dermal clusters 24/03/23}
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/volar dotplot.shh.jpg", width = 1400, plot = 
+  fun.dotplot(data, feature = shh, ident = ident.v)+
+  theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45))+
+  ggtitle("SHH signaling")
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/volar dotplot.wnt.jpg", width = 1000, plot = 
+  fun.dotplot(data, feature = wnt, ident = ident.v)+
+  theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), axis.text.y=element_blank())+
+   labs(y = NULL)+
+   ggtitle("WNT signaling")
+)
+  
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/volar dotplot.fgf20.jpg", width = 1400, plot = 
+  fun.dotplot(data, feature = fgf20, ident = ident.v)+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), axis.text.y=element_blank())+
+   labs(y = NULL)+
+  ggtitle("FGF20 signaling")
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/volar dotplot.dc.jpg", width = 1000, plot = 
+  fun.dotplot(data, feature = dc, ident = ident.v)+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), axis.text.y=element_blank())+
+   labs(y = NULL)+
+   ggtitle("Dc associated genes")
+)
+
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/volar vs back vs dorsal dotplot.dc.jpg", height = 1000, width = 3000,
+       plot = 
+  fun.dotplot(data, feature = "FGFR1,FGFR2,FGFR3,ETV5,SPRY4", 
+              ident = "FB_I.Ventral_digit,FB_I.Dorsal_digit,FB_I.Back_skin")+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45))+
+   ggtitle("FGF20 signaling", subtitle = "Comparison between the anatomical locations")
+)
+```
+
+```{r Percentage of cells that express BMP7 in the back FB_I 24/03/23}
+x<- FindMarkers(data, ident.1 = "FB_I.Back_skin", ident.2 = "BK_I.Back_skin", test.use = "MAST")
+x$genes<- row.names(x)
+
+Idents(data)<- data$new.idents.0.51_sample_type
+y<- subset(data, idents = "FB_I.Back_skin")
+z<- subset(y, BMP7 >= 0.01)
+sum(table(z$Phase))
+```
+
+```{r barcharts}
+Idents(data)<- data$new.idents.0.51
+#x<- subset(data, idents = d("Dermis_I,Dermis_II,Dermis_III,Dermis_IV,Dermis_V,Demis_VI"))
+data[["umap.idents.sample_type"]]<- paste(data$integrated_snn_res.0.5, data$sample_type, sep = ".")
+Idents(data)<- data$umap.idents.sample_type
+df<- data.frame(table(data$umap.idents.sample_type))
+df<- df[df$Var1 == "4.Back" | df$Var1 == "0.Back" | df$Var1 == "10.Back" | df$Var1 == "11.Back"| df$Var1 == "2.Back" | df$Var1 == "8.Back" |
+        df$Var1 == "4.Ventral" | df$Var1 == "0.Ventral" | df$Var1 == "10.Ventral" | df$Var1 == "11.Ventral"| df$Var1 == "2.Ventral" | df$Var1 == "8.Ventral" |
+        df$Var1 == "4.Dorsal" | df$Var1 == "0.Dorsal" | df$Var1 == "10.Dorsal" | df$Var1 == "11.Dorsal"| df$Var1 == "2.Dorsal" | df$Var1 == "8.Dorsal",]
+rep<- rep(d("Back,Dorsal,Ventral"),length(df[,1])/3)
+df$sample_type<- rep
+cluster<- d("0,0,0,10,10,10,11,11,11,2,2,2,4,4,4,8,8,8")
+df$cluster<- cluster
+
+ggplot(df, aes(x = cluster, y = Freq, fill = sample_type))+
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 0.8))+
+  xlab("Basal epidermal clusters")+
+  ylab("Number of nuclei")+
+  ggtitle("Counts of nuceli across the basal epidermal populations")+
+  scale_fill_brewer(palette = "Pastel1", direction = 1)
+```
+
+```{r dotplots}
+#### I D E N T S -------------------------------
+Idents(data)<- data$umap.idents.sample_type
+i.v<- d("4.Ventral,0.Ventral,10.Ventral,11.Ventral,2.Ventral,8.Ventral")
+i.b<- d("4.Back,0.Back,10.Back,11.Back,2.Back,8.Back")
+i.all<- list(i.v,i.b)
+
+#### D O T P L O T S -------------------------------
+for(i in seq_along(i.all)){
+  print(i)
+  print(d.dotplot(data, feature = "SOX2,BMP4,BMP7,PTCH1,DKK1,DKK2", ident = i.all[[i]]))
+  if(i == 2){
+    print("It's a new one baby")
+    print(d.dotplot(data, feature = "SOX2,BMP4,BMP7,PTCH1,DKK1,DKK2", ident = c(i.all[[1]],i.all[[2]])))
+  }
+}
+
+d.dotplot(data, feature = "FGFR1,FGFR2,FGFR3,ETV5,SPRY4", ident = "4.Dorsal,4.Back,4.Ventral")+
+   theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45))
+```
+
+```{r PHATE data}
+#phate<- readRDS("F:/MASTERS/mouse sn data/Cameron's analysis/Saved objects/Phate_of_cluster.4.rds")
+phate<- readRDS("K:/headon_grp/roslin_bioinformatics/2021-10-27-_9767_-Denis_Headon_snRNAseq_skin_3regions/documentation/20220503_pseudotime_c4/slingshot_noFilt_c4/obj_slingshot.rds")
+
+phate[["phate.idents"]]<- paste(phate$integrated_snn_res.0.7,phate$sample_type, sep = ".")
+Idents(phate)<- phate$phate.idents
+phate<- NormalizeData(phate)
+```
+```{r PHATE dimplot & featureplots 03.04.23}
+Idents(phate)<- phate$integrated_snn_res.0.7
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/PATE dimplot split 03.04.23.jpg", plot = 
+DimPlot(phate, split.by = "sample_type", reduction = "phate")+
+   theme_minimal()+
+  theme(aspect.ratio = 1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  ggtitle("PHATE projection of nuclei from FB_I")
+)
+
+genes<- d("BMP7,SOX2,PTCH1,INHBA")
+for(i in seq_along(genes)){
+  
+  d.jpeg(file = paste("D:/Data & Plots/Masters corrections/Dermis/PHATE featureplots",genes[i], "03.04.23.jpg", sep = " "), plot = 
+  fun.ggplot.feature(phate, feature = genes[i], reduction = "PHATE")
+  )
+}
+```
+
+```{r dimplot}
+DimPlot(phate, reduction = "phate")+
+  theme_minimal()
+
+DimPlot(phate, reduction = "phate", split.by = "sample_type", label = TRUE, repel = TRUE)+NoLegend()+
+  theme_minimal()
+
+d.ggfeatureplot(phate, feature = "PTCH1", split.by = "sample_type", reduction = "PHATE")
+
+Idents(phate)<- "sample_type"
+phate<- NormalizeData(phate)
+phate<- FindVariableFeatures(phate)
+phate<- ScaleData(phate, features = rownames(phate))
+phate<- RunPCA(phate)
+
+ElbowPlot(phate)
+
+phate<- RunUMAP(phate, dims = 1:6)
+DimPlot(phate, reduction = "umap")+
+  theme_minimal()
+```
+
+```{r cell cycle scoring Dermis}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+phate<- CellCycleScoring(phate, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+DimPlot(phate, label = TRUE, reduction = "phate", split.by = "sample_type")+
+  theme_minimal()
+```
+
+
+```{r Taking the phate idents}
+Idents(phate)<- phate$phate.idents
+a<- WhichCells(phate, idents = "4.Ventral")
+b<- WhichCells(phate, idents = "3.Back")
+
+d<- WhichCells(phate, idents = "0.Ventral")
+e<- WhichCells(phate, idents = "1.Ventral")
+f<- WhichCells(phate, idents = "2.Ventral")
+
+g<- WhichCells(phate, idents = "0.Back")
+h<- WhichCells(phate, idents = "1.Back")
+i<- WhichCells(phate, idents = "2.Back")
+
+Idents(data)<- data$integrated_snn_res.0.5
+c<- WhichCells(data, idents = "1")
+
+data[["idents.b"]]<- ifelse(names(data$nCount_RNA) %in% a, "PHATE_4.Ventral_digit",
+                     ifelse(names(data$nCount_RNA) %in% b, "PHATE_3.Back_skin",
+                     ifelse(names(data$nCount_RNA) %in% c, "BKs.Back_skin_&_Ventral_digit",
+                     ifelse(names(data$nCount_RNA) %in% d, "PHATE_0.Ventral_digit",
+                     ifelse(names(data$nCount_RNA) %in% e, "PHATE_1.Ventral_digit",
+                     ifelse(names(data$nCount_RNA) %in% f, "PHATE_2.Ventral_digit",
+                     ifelse(names(data$nCount_RNA) %in% g, "PHATE_0.Back_skin",
+                     ifelse(names(data$nCount_RNA) %in% h, "PHATE_1.Back_skin",
+                     ifelse(names(data$nCount_RNA) %in% i, "PHATE_2.Back_skin", NA)))))))))     
+Idents(data)<- data$idents.b
+```
+
+```{r Similarity assessment of conserved 4 subclusters}
+x<- FindMarkers(data, ident.1 = d("4_0.Ventral,4_1.Ventral,4_2.Ventral"), ident.2 = "1", test.use = "MAST")
+y<- FindMarkers(data, ident.1 = d("4_0.Back,4_1.Back,4_2.Back"), ident.2 = "1", test.use = "MAST")
+
+
+x.t<- x[x$avg_log2FC > 0 & x$p_val_adj < 0.05,]
+y.t<- y[y$avg_log2FC > 0 & y$p_val_adj < 0.05,]
+
+x.t<- row.names(x.t)
+y.t<- row.names(y.t)
+
+z<- list(x.t,y.t)
+
+w<- c(x.t,y.t)
+w<- w[duplicated(w)] 
+
+#### V E N N -------------------------------
+myCol <- brewer.pal(3, "Pastel2")
+
+ggVennDiagram(z, label_alpha = 0, category.names = d("Volar superficial dermal markers,Haired superficial dermal markers"), label_color = "black")+
+  ggplot2::scale_colour_manual(values = d("black,black"))+
+  ggplot2::scale_fill_gradient(low = myCol[1], high = myCol[2])+
+  NoLegend()
+```
+
+```{r featureplots, fig.height=6, fig.width=12}
+genes<- d("SOX2,BMP4,BMP7,PTCH1,DKK1,DKK2")
+
+d.ggfeatureplot(phate, feature = genes, split.by = "sample_type", reduction = "PHATE")
+```
+
+```{r pseudotime setup, include = FALSE}
+Idents(phate)<- phate$integrated_snn_res.0.7
+phate<- Seurat::NormalizeData(phate, assay = "RNA")
+phate<- FindVariableFeatures(phate)
+phate<- ScaleData(phate, features = rownames(phate))
+phate<- RunPCA(phate)
+  
+  #ElbowPlot(phate)
+  
+  #phate<- RunUMAP(phate, dims = 1:6)
+
+genes<- d("BMP7,SOX2,PTCH1,LEF1")
+upreg<- d("LAMC3,CADPS2,KCNN2,LAMA2,KIF26B")
+
+sce <- as.SingleCellExperiment(phate)
+sce <- slingshot(sce, clusterLabels = "ident", reducedDim = "PCA", allow.breaks = FALSE, end.clus = "3") 
+
+z<- sce$slingshot 
+z@metadata$lineages
+```
+
+```{r umap lineage lines}
+phate[["Pseudotime_order"]]<- sce$slingPseudotime_1
+
+colours <- colorRampPalette(brewer.pal(11,'RdBu')[-6])(100)
+colours<- rev(colours)
+protcol <- colours[cut(sce$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce)$PHATE, col = protcol, pch=16)
+
+  x<- FetchData(phate, vars = "PHATE_1")
+  y<- FetchData(phate, vars = "PHATE_2")
+  z<- FetchData(phate, vars = "sample_type")
+  w<- FetchData(phate, vars = "Pseudotime_order")
+
+  df<- data.frame(x,y,z,protcol,w)
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/PHATE coloured by pseudotime LIN 2 03.04.23.jpg", plot = 
+  ggplot(df, aes(x = PHATE_1, y = PHATE_2, colour  = Pseudotime_order))+
+  geom_point()+
+  scale_colour_gradientn(colors = rev(brewer.pal(10,"RdBu")))+
+  theme_minimal()+
+  theme(aspect.ratio = 1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  ggtitle("PHATE projection of nuclei from FB_I", subtitle = "Coloured by the pseudotime order of each nucleus in lineage 2")
+#)
+```
+
+```{r one gene but each location gets its own line}
+fun.pseudoplot<- function(data1, data2, feature, split.by, points, lineage, confidence){
+  
+  
+  feature<- fun.l(feature)
+  gene<- FetchData(data1, vars = feature)
+  if(missing(data2)){data2<- sce}else{sce<- data2}
+  if(missing(points)){points = 0}
+  if(missing(lineage)){lineage = 1}
+  if(missing(confidence)){confidence = 0.95}#default 
+  
+  lineage<- paste0(lineage)#to add quotation marks to it 
+  lineage<- paste("slingPseudotime_",lineage,sep = "")
+  df<- data.frame(sce[[lineage]],gene)
+    names(df)[1]<- "time"
+    df<- melt(df, id.vars = "time")
+    names(df)[2]<- "Gene_names"
+    names(df)[3]<- "expression"
+    
+  if(length(feature) >= 2){x<- "Gene expression"}else{x<- paste(feature,"expression", sep = " ")}
+  #add in colour by sample functionality depending on the number of genes called 
+    
+  if(missing(split.by)){
+    
+    ggplot(df, aes(x = time, y = expression, colour = Gene_names))+
+      geom_point(alpha = points)+
+      geom_smooth(na.rm = TRUE, level = confidence)+
+      xlab("Pseudotime ordering")+
+      ylab(x)
+    
+  }else{
+    
+    ident<- FetchData(data1, vars = split.by)
+    df<- data.frame(df,ident)
+    names(df)[4]<- "Identity"
+      
+    ggplot(df, aes(x = time, y = expression, colour = Identity))+
+     geom_point(alpha = points)+
+     geom_smooth(na.rm = TRUE, level = confidence)+
+     scale_colour_manual(values = d("#f78da7,#41c6c9"))+
+     xlab("Pseudotime ordering")+
+     ylab(x)
+    
+  }
+}
+```
+
+```{r Pseudotime plots 03.04.23}
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/PHATE pseudoplot split 03.04.23.jpg", plot = 
+fun.pseudoplot(data1 = phate, data2 = sce, feature = "PTCH1,SOX2,BMP7,INHBA", split.by = "sample_type")+
+  theme_minimal()+
+  theme(aspect.ratio = 1)+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )+
+  ggtitle("Pseudotime ordering of FB_IV", subtitle = "Gene expression across lineage 1, seperated by skin sample type")
+#)
+```
+
+```{r pseudotime graph, error=FALSE,warning=FALSE,message=FALSE}
+#### B Y  C L U S T E R -------------------------------
+library(Polychrome)
+library(ggbeeswarm)
+library(ggthemes)
+
+gene<- FetchData(phate, vars = "BMP7")
+
+df <- data.frame(sce$phate.idents,sce$slingPseudotime_1, gene, sce$sample_type)
+names(df)[1]<- "ident"
+names(df)[2]<- "time"
+names(df)[3]<- "BMP7_expression"
+names(df)[4]<- "sample_type"
+
+#### R E O R D E R I N G -------------------------------
+order<- rev(d("1,2,3,4,5,6,7,8,9"))
+
+x<- df$ident
+x<- x[!duplicated(x)]
+current<- x
+
+df$order<- as.character(df$ident)
+df$order<- factor(df$order, levels = current)
+levels(df$order)<- order
+
+#pdf(height = 6, width = 12, file = "F:/MASTERS/mouse sn data/Cameron's analysis/Paper figures/cluster pseudotime order graph.pdf")
+ggplot(df, aes(x = time, y = reorder(ident, order), colour = ident))+
+  geom_quasirandom(groupOnX = FALSE, size = 3)+
+  scale_colour_gradientn(colors = c("#3983A0","lightgreen", "yellow", "red"))+
+  theme_minimal()+
+  theme(text = element_text(size = 20))
+#dev.off()
+
+#### N O R M A L -------------------------------
+fun.pseudoplot.dope(data1 = phate, data2 = sce, feature = "LEF1", split.by = "sample_type")+
+  theme_minimal()
+
+fun.pseudoplot(phate, feature = "SYNE1", split.by = "sample_type", lineage = 2)
+```
+
+```{r Heatmaps using highly variable genes 28.03.23}
+# extracting the variable features identified by FindVariableFeatures #
+x <- phate@assays$RNA@var.features
+genes<- FetchData(phate, vars = c(x)[1:50])
+time<- sce$slingPseudotime_2
+split<- FetchData(phate, vars = "sample_type")
+
+df<- data.frame(genes,time,split)
+df<- na.omit(df)
+df<- df[order(df$time, decreasing = TRUE),]
+df$order<- rev(seq_along(df$time))
+df$time<- round(df$time,2)
+df<- melt(df, id.vars = d("time,order,sample_type"))
+
+df.v<- df[df$sample_type == "Ventral",]
+df.b<- df[df$sample_type == "Back",]
+
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/PHATE lineage 2 highly vairbale genes heatmap 03.04.23.jpg", plot = 
+ggplot(df.v, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90), aspect.ratio = 3, legend.position = "none")+
+  ylab("Variable genes")+
+  ggtitle("Ventral_digit")+
+  
+ggplot(df.b, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Variable genes")+
+  ggtitle("Back_skin")
+#)
+```
+
+```{r pseudotime heatmaps mouse DC genes}
+#### M O U S E -------------------------------
+dc.gene<- read.csv(file = "F:/James and paper/Mouse/Hair gel DC genes.csv", header = TRUE)
+dc.gene<- toupper(paste(dc.gene$Dc.genes))
+
+genes<- FetchData(phate, vars = c(dc.gene[120:180]))
+time<- sce$slingPseudotime_1
+split<- FetchData(phate, vars = "sample_type")
+
+df<- data.frame(genes,time,split)
+df<- na.omit(df)
+df<- df[order(df$time, decreasing = TRUE),]
+df$order<- rev(seq_along(df$time))
+df$time<- round(df$time,2)
+df<- melt(df, id.vars = d("time,order,sample_type"))
+
+
+ggplot(df, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))
+
+#### S P L I T -------------------------------
+df.v<- df[df$sample_type == "Ventral",]
+df.b<- df[df$sample_type == "Back",]
+
+#pdf(file = "F:/James and paper/Mouse/Hair.gel DC gene heatmap.pdf")
+ggplot(df.v, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))+
+  ggtitle("V E N T R A L")+
+  
+ggplot(df.b, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))+
+  ggtitle("B A C K")
+#dev.off()
+```
+
+```{r pseudotime heatmaps clu.4_3 DC genes}
+Idents(phate)<- phate$phate.idents
+df<- FindMarkers(phate, ident.1 = "3.Back", ident.2 = d("0.Back,1.Back,2.Back"), test.use = "MAST")
+#df<- FindMarkers(phate, ident.1 = "4.Ventral", ident.2 = d("0.Ventral,1.Ventral,2.Ventral"), test.use = "MAST")
+  
+  top.genes<- data.frame(df[order(df$avg_log2FC, decreasing = TRUE),])
+  top.genes<- top.genes[top.genes$avg_log2FC > 0 & top.genes$p_val_adj < 0.05,]
+  top.genes<- row.names(top.genes)
+  
+genes<- FetchData(phate, vars = top.genes[1:40])
+time<- sce$slingPseudotime_1
+split<- FetchData(phate, vars = "sample_type")
+
+df<- data.frame(genes,time,split)
+df<- na.omit(df)
+df<- df[order(df$time, decreasing = TRUE),]
+df$order<- rev(seq_along(df$time))
+df$time<- round(df$time,2)
+df<- melt(df, id.vars = d("time,order,sample_type"))
+
+
+ggplot(df, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))
+
+#### S P L I T -------------------------------
+df.v<- df[df$sample_type == "Ventral",]
+df.b<- df[df$sample_type == "Back",]
+
+#pdf(file = "F:/James and paper/Mouse/Human differential expression DC gene heatmap.pdf")
+ggplot(df.v, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))+
+  ggtitle("V E N T R A L")+
+  
+ggplot(df.b, aes(x = reorder(time, order), y = reorder(variable, value*-1), fill = value))+
+  geom_tile()+
+  scale_fill_gradient(low = "darkblue", high = "yellow")+
+  theme(axis.text.x = element_text(angle = 90))+
+  ggtitle("B A C K")
+#dev.off()
+```
+
+```{r comparing mouse and our human DC gene lists}
+#### S E T U P -------------------------------
+dc.gene<- read.csv(file = "F:/MASTERS/hairgel DC genes.csv", header = TRUE)
+dc.gene<- toupper(paste(dc.gene$Signature.genes.))
+
+Idents(phate)<- phate$phate.idents
+df<- FindMarkers(phate, ident.1 = "3.Back", ident.2 = d("0.Back,1.Back,2.Back"), test.use = "MAST")
+
+  top.genes<- data.frame(df[order(df$avg_log2FC, decreasing = TRUE),])
+  top.genes<- top.genes[top.genes$avg_log2FC > 0 & top.genes$p_val_adj < 0.05,]
+  top.genes<- row.names(top.genes)
+  
+#### C O M P A R I S O N -------------------------------
+x<- c(dc.gene,top.genes)
+# only keeps duplicated values
+x<- x[duplicated(x)] 
+
+#### V E N N  D I A G R A M S -------------------------------
+library("ggVennDiagram")
+
+y<- list(dc.gene,top.genes)
+myCol <- brewer.pal(3, "Pastel2")
+
+ggVennDiagram(y, label_alpha = 0, category.names = d("Mouse Dc genes,Human Dc genes"), label_color = "black")+
+  ggplot2::scale_colour_manual(values = d("black,black"))+
+  ggplot2::scale_fill_gradient(low = myCol[1], high = myCol[2])+
+  NoLegend()
+```
+
+```{r differential expression and volcano plots }
+x<- FindMarkers(phate, ident.1 = "4.Ventral", ident.2 = "3.Back", test.use = "MAST")
+y<- FindMarkers(phate, ident.1 = "4.Ventral", ident.2 = d("0.Ventral,1.Ventral,2.Ventral"), test.use = "MAST")
+z<- FindMarkers(phate, ident.1 = "3.Back", ident.2 = d("0.Back,1.Back,2.Back"), test.use = "MAST")
+
+fun.volcano(phate, ident.1 = "4.Ventral", ident.2 = "3.Back", top.genes = TRUE, diff.exp = x)
+fun.volcano(phate, ident.1 = "4.Ventral", ident.2 = d("0.Ventral,1.Ventral,2.Ventral"), top.genes = TRUE, diff.exp = y)
+fun.volcano(phate, ident.1 = "3.Back", ident.2 = d("0.Back,1.Back,2.Back"), top.genes = TRUE, diff.exp = z)
+
+#### C O M P A R I S O N -------------------------------
+y$genes<- row.names(y)
+z$genes<- row.names(z)
+
+u<- list(y$genes,z$genes)
+w<- c(y$genes,z$genes)
+#keeps only whats duplictaed
+w<- w[duplicated(w)] 
+
+
+y.reduced<- y[y$genes == w,]
+z.reduced<- z[z$genes == w,]
+
+#### V E N N  D I A G R A M -------------------------------
+library(ggVennDiagram)
+myCol <- brewer.pal(3, "Pastel2")
+
+ggVennDiagram(u, label_alpha = 0, category.names = d("4_4 marker genes,4_3 cell marker genes"), label_color = "black", label_percent_digit = 2)+
+  ggplot2::scale_colour_manual(values = d("black,black"))+
+  ggplot2::scale_fill_gradient(low = myCol[1], high = myCol[2])+
+  NoLegend()
+```
+
+```{r componet plots}
+phate<- FindVariableFeatures(phate)
+phate<- ScaleData(phate, features = rownames(phate))
+
+d.quasi_componentplot(phate, comp1 = "BMP7", comp2 = x[2], split = "sample_type", col = "integrated_snn_res.0.7")+
+  theme_minimal()
+```
+
+```{r signalling networks FB BK ventral CELLCHAT}
+#### Ventral epidermis only ####
+Idents(data)<- data$idents.b
+
+my.data<- subset(data, idents = d("BKs.Back_skin_&_Ventral_digit,PHATE_4.Ventral_digit"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+
+#### Epidermis and dermis ####
+```
+
+
+```{r CELLCHAT plots Dermis}
+#pdf(height = 6, width = 7, file = "F:/MASTERS/mouse sn data/Cameron's analysis/Thesis figures/Ventral all dermis cellchat.pdf")
+groupSize <- as.numeric(table(my.data@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(my.data@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(my.data@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+#bubble plot
+netVisual_bubble(my.data, remove.isolate = FALSE)+coord_flip()
+
+#ligand/receptor contributions plot
+netAnalysis_contribution(my.data, signaling = "WNT")
+netAnalysis_contribution(my.data, signaling = "EDA")
+netAnalysis_contribution(my.data, signaling = "BMP")
+netAnalysis_contribution(my.data, signaling = "NT")
+
+#signaling heatmap
+my.data<- netAnalysis_computeCentrality(my.data, slot.name = "netP") 
+x<- 6
+#d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/PHATE 4 signaling.jpg", width = 2100 , plot = 
+netAnalysis_signalingRole_heatmap(my.data, pattern = "outgoing", width = x, height = x, color.heatmap = "YlGnBu")
+netAnalysis_signalingRole_heatmap(my.data, pattern = "incoming", width = x, height = x, color.heatmap = "YlGnBu")
+#)
+#dev.off()
+
+#outgoing
+selectK(my.data, pattern = "outgoing")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "outgoing", k = nPatterns)
+    netAnalysis_river(my.data, pattern = "outgoing")
+    netAnalysis_dot(my.data, pattern = "outgoing")
+
+#incoming
+selectK(my.data, pattern = "incoming")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "incoming", k = nPatterns)
+    netAnalysis_river(my.data, pattern = "incoming")
+    netAnalysis_dot(my.data, pattern = "incoming")
+```
+
+#### volar specific dermal populations analysis ####
+```{r Volcano plots of the VSPs 29.03.23}
+Idents(data)<- data$new.idents.0.51_sample_type
+# Differential expression #
+fb.iv<- FindMarkers(data, ident.1 = "FB_IV.Ventral_digit", test.use = "MAST")
+fb.ii<- FindMarkers(data, ident.1 = "FB_II.Ventral_digit",test.use = "MAST")
+fb.v<- FindMarkers(data, ident.1 = "FB_V.Ventral_digit", test.use = "MAST")
+
+# plots #
+d.jpeg(file = "G:/Data & Plots/Masters corrections/Dermis/volcano FB_V vs rest log ordering 29.03.23.jpg", plot = 
+fun.volcano(data, ident.1 = "FB_II.Ventral_digit", ident.2 = "FB_II.Ventral_digit,FB_III.Ventral_digit,FB_VI.Ventral_digit", 
+            diff.exp = fb.v, 
+            colour.modifier = 1.3, top.genes = "l", num.top.genes = 5,colour.signiff = "#F28C28")+
+  theme_minimal()+
+   theme(aspect.ratio = 1)+
+  ggtitle("Volar FB_V", subtitle = "FB_V.Ventral_digit vs all other populations")+
+  theme(
+  panel.background = element_rect(colour = "black", size= NULL)
+  )
+)
+```
+
+```{r RSPO2 FB_IV figures 03.04.23}
+### Feature plot ###
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/RSPO2 featureplot split 03.04.23.jpg", plot = 
+fun.ggplot.feature(data, feature = "RSPO2", split.by = "new.sample_type", size = 0.8)
+)
+
+### Dot plot ###
+Idents(data)<- data$new.idents.0.51_sample_type
+
+ventral.ident<- rev(d("FB_I.Ventral_digit,FB_II.Ventral_digit,FB_III.Ventral_digit,FB_IV.Ventral_digit,FB_V.Ventral_digit,FB_VI.Ventral_digit"))
+back.ident<- rev(d("FB_I.Back_skin,FB_III.Back_skin,FB_VI.Back_skin"))
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/RSPO2 dotplot VENTRAL 03.04.23.jpg", plot = 
+fun.dotplot(data, feature = "RSPO2,DCC,GRM7", ident = ventral.ident)+
+  theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), aspect.ratio = 1/3)
+)
+
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/RSPO2 dotplot BACK 03.04.23.jpg", plot = 
+fun.dotplot(data, feature = "RSPO2,DCC,GRM7", ident = back.ident)+
+  theme(axis.text.x = element_text(hjust = 1.1, vjust = 1.1, angle = 45), aspect.ratio = 1/3)
+)
+```
+
+```{r feature plots and dotplots, fig.height=3.5, fig.width=8.5}
+genes<- d("ERBB4,NRG3,RSPO2,DKK1,DKK2,PTCH1,FGFR2,ETV5,SPRY4")
+clu.10<- d("KRT17,DCC,NTN1,GRM7,ERBB4,RSPO2")
+
+#### F E A T U R E P L O T S -------------------------------
+d.ggfeatureplot(data, feature = clu.10, split.by = "sample_type")
+
+#### D O T P L O T S -------------------------------
+data[["dermal.idents"]]<- paste(data$integrated_snn_res.0.5, data$sample_type, sep = ".")
+Idents(data)<- data$dermal.idents
+
+i.v<- rev(d("4.Ventral,0.Ventral,10.Ventral,11.Ventral,2.Ventral,8.Ventral"))
+i.b<- rev(d("4.Back,0.Back,2.Back"))
+
+d.dotplot(data, feature = genes, ident = i.b)+
+d.dotplot(data, feature = genes, ident = i.v)
+```
+
+```{r volcano plots}
+data[["dermal.idents"]]<- paste(data$integrated_snn_res.0.5, data$sample_type, sep = ".")
+Idents(data)<- data$dermal.idents
+
+x<- FindMarkers(data, ident.1 = "10.Ventral", ident.2 = d("0.Ventral,2.Ventral,4.Ventral"), test.use = "MAST")
+y<- FindMarkers(data, ident.1 = "11.Ventral", ident.2 = d("0.Ventral,2.Ventral,4.Ventral"), test.use = "MAST")
+z<- FindMarkers(data, ident.1 = "8.Ventral", ident.2 = d("0.Ventral,2.Ventral,4.Ventral"), test.use = "MAST")
+
+w<- FindMarkers(data, ident.1 = "10.Ventral", ident.2 = d("0.Ventral,2.Ventral,4.Ventral,11.Ventral,8.Ventral"), test.use = "MAST")
+v<- FindMarkers(data, ident.1 = d("4.Ventral,0_10_11.Ventral,2_8.Ventral"), ident.2 = d("4.Back,0_10_11.Back,2_8.Back"), test.use = "MAST")
+
+fun.volcano(data, ident.1 = "10.Ventral", ident.2 = "0.Ventral,2.Ventral,4.Ventral", diff.exp = x, top.genes = TRUE)
+fun.volcano(data, ident.1 = "11.Ventral", ident.2 = "0.Ventral,2.Ventral,4.Ventral", diff.exp = y, top.genes = TRUE)
+fun.volcano(data, ident.1 = "8.Ventral", ident.2 = "0.Ventral,2.Ventral,4.Ventral", diff.exp = z, top.genes = TRUE)
+```
+
+```{r}
+fun.3d.feature(data, feature = "RSPO2", ident = "integrated_snn_res.0.5", type = 1)
+```
+
+```{r component plot, fig.height=4, fig.width=12}
+Idents(data)<- data$integrated_snn_res.0.5
+mid.dermis<- subset(data, idents = d("0,10,11"))
+
+mid.dermis<- NormalizeData(mid.dermis)
+mid.dermis<- FindVariableFeatures(mid.dermis)
+mid.dermis<- ScaleData(mid.dermis, features = rownames(mid.dermis))
+
+for(i in seq_along(clu.10)){
+  print(i)
+  print(d.quasi_componentplot(mid.dermis, comp1 = clu.10[i], comp2 = "PDGFRA", col = "integrated_snn_res.0.5", split.by = "sample_type")+
+  theme_minimal())
+}
+```
+
+```{r 11 and 8}
+data[["o.5_sample_type"]]<- paste(data$integrated_snn_res.0.5, data$sample_type, sep = ".")
+Idents(data)<- data$o.5_sample_type
+
+x<- FindMarkers(data, ident.1 = "11.Ventral")
+y<- FindMarkers(data, ident.1 = "11.Ventral", ident.2 = d("4.Ventral,0.Ventral,10.Ventral,2.Ventral,8.Ventral"))
+x$genes<- row.names(x)
+y$genes<- row.names(y)
+
+w<- FindMarkers(data, ident.1 = "8.Ventral")
+u<- FindMarkers(data, ident.1 = "8.Ventral", ident.2 = d("4.Ventral,0.Ventral,10.Ventral,2.Ventral,11.Ventral"))
+w$genes<- row.names(w)
+u$genes<- row.names(u)
+```
+
+```{r signalling networks FB BK II ventral CELLCHAT, include=FALSE}
+#### Ventral epidermis only ####
+Idents(data)<- data$new.idents.0.51_sample_type
+
+# Taking the Bks and conserved FB populations #
+my.data<- subset(data, idents = d("BK_I.Ventral_digit,BK_II.Ventral_digit,BK_III.Ventral_digit,FB_I.Ventral_digit,FB_III.Ventral_digit,FB_IV.Ventral_digit,FB_VI.Ventral_digit"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+```
+
+```{r signalling networks Back FB BK ICELLCHAT, include=FALSE}
+#### Back epidermis only ####
+Idents(data)<- data$new.idents.0.51_sample_type
+
+my.data<- subset(data, idents = d("BK_I.Back_skin,BK_II.Back_skin,BK_III.Back_skin,FB_I.Back_skin,FB_III.Back_skin,FB_VI.Back_skin"))
+my.data@meta.data$clusters<-Idents(my.data)
+my.data<- createCellChat(my.data, group.by = "clusters")
+
+#------------------------------------------------------- Selecting the ligand-receptor database
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+#Unsure but I think that "CellChatDB.use" has to be called exactly that?
+my.data@DB <- CellChatDB.use
+
+#------------------------------------------------------- 'Preprocessing the expression data for cell-cell communication analysis'
+my.data<- subsetData(my.data)
+my.data<- identifyOverExpressedGenes(my.data)
+my.data<- identifyOverExpressedInteractions(my.data)
+
+#------------------------------------------------------- Infering the cellular signaling pathways
+my.data<- computeCommunProb(my.data)
+my.data<- filterCommunication(my.data, min.cells = 10)
+my.data<- computeCommunProbPathway(my.data)
+my.data<- aggregateNet(my.data)
+```
+
+```{r CELLCHAT plots Dermis volar specific pop, fig.height=6, fig.width= 7}
+#pdf(height = 6, width = 7, file = "F:/MASTERS/mouse sn data/Cameron's analysis/Thesis figures/Ventral all dermis cellchat.pdf")
+groupSize <- as.numeric(table(my.data@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(my.data@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(my.data@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+#bubble plot
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/VOLAR FB IV and BKs bubble plot 30.3.23.jpg", height = 3000, width = 2500, plot = 
+netVisual_bubble(my.data, remove.isolate = FALSE)+
+  coord_flip()+
+  ggtitle("Bubble plot of potential signaling interactions in the volar skin", subtitle = "Analaysis between BK_I, II, III and FB_I, IV, VI")
+)
+
+#ligand/receptor contributions plot
+netAnalysis_contribution(my.data, signaling = "WNT")
+netAnalysis_contribution(my.data, signaling = "NT")
+netAnalysis_contribution(my.data, signaling = "EDA")
+netAnalysis_contribution(my.data, signaling = "BMP")
+netAnalysis_contribution(my.data, signaling = "FGF")
+
+#signaling heatmap
+my.data<- netAnalysis_computeCentrality(my.data, slot.name = "netP") 
+x<- 6
+d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/BACK FB IV and BKs heatmap plot 30.3.23.jpg", width = 2100, plot = 
+netAnalysis_signalingRole_heatmap(my.data, pattern = "outgoing", width = x, height = x, color.heatmap = "YlGnBu")+
+netAnalysis_signalingRole_heatmap(my.data, pattern = "incoming", width = x, height = x, color.heatmap = "YlGnBu")
+)
+#dev.off()
+
+#outgoing
+selectK(my.data, pattern = "outgoing")
+    nPatterns=4
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "outgoing", k = nPatterns)
+    d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/BACK FB vs Bk river plots outgoing 30.03.23.jpg", plot = 
+    netAnalysis_river(my.data, pattern = "outgoing")
+    )
+    netAnalysis_dot(my.data, pattern = "outgoing")
+
+#incoming
+selectK(my.data, pattern = "incoming")
+    nPatterns=3
+    my.data<- identifyCommunicationPatterns(my.data, pattern = "incoming", k = nPatterns)
+    d.jpeg(file = "D:/Data & Plots/Masters corrections/Dermis/BACK FB vs Bk river plots incoming 30.03.23.jpg", plot = 
+    netAnalysis_river(my.data, pattern = "incoming")
+     )
+    netAnalysis_dot(my.data, pattern = "incoming")
+```
+
+
+#### GC content ####
+```{r SOX2 GC content}
+d.unlist<- function(x){
+  x<- strsplit(x, "")[[1]]
+}
+
+sox2<- "GATGGTTGTCTATTAACTTGTTCAAAAAAGTATCAGGAGTTGTCAAGGCAGAGAAGAGAGTGTTTGCAAAAGGGGGAAAGTAGTTTGCTGCCTCTTTAAGACTAGGACTGAGAGAAAGAAGAGGAGAGAGAAAGAAAGGGAGAGAAGTTTGAGCCCCAGGCTTAAGCCTTTCCAAAAAATAATAATAACAATCATCGGCGGCGGCAGGATCGGCCAGAGGAGGAGGGAAGCGCTTTTTTTGATCCTGATTCCAGTTTGCCTCTCTCTTTTTTTCCCCCAAATTATTCTTCGCCTGATTTTCCTCGCGGAGCCCTGCGCTCCCGACACCCCCGCCCGCCTCCCCTCCTCCTCTCCCCCCGCCCGCGGGCCCCCCAAAGTCCCGGCCGGGCCGAGGGTCGGCGGCCGCCGGCGGGCCGGGCCCGCGCACAGCGCCCGCATGTACAACATGATGGAGACGGAGCTGAAGCCGCCGGGCCCGCAGCAAACTTCGGGGGGCGGCGGCGGCAACTCCACCGCGGCGGCGGCCGGCGGCAACCAGAAAAACAGCCCGGACCGCGTCAAGCGGCCCATGAATGCCTTCATGGTGTGGTCCCGCGGGCAGCGGCGCAAGATGGCCCAGGAGAACCCCAAGATGCACAACTCGGAGATCAGCAAGCGCCTGGGCGCCGAGTGGAAACTTTTGTCGGAGACGGAGAAGCGGCCGTTCATCGACGAGGCTAAGCGGCTGCGAGCGCTGCACATGAAGGAGCACCCGGATTATAAATACCGGCCCCGGCGGAAAACCAAGACGCTCATGAAGAAGGATAAGTACACGCTGCCCGGCGGGCTGCTGGCCCCCGGCGGCAATAGCATGGCGAGCGGGGTCGGGGTGGGCGCCGGCCTGGGCGCGGGCGTGAACCAGCGCATGGACAGTTACGCGCACATGAACGGCTGGAGCAACGGCAGCTACAGCATGATGCAGGACCAGCTGGGCTACCCGCAGCACCCGGGCCTCAATGCGCACGGCGCAGCGCAGATGCAGCCCATGCACCGCTACGACGTGAGCGCCCTGCAGTACAACTCCATGACCAGCTCGCAGACCTACATGAACGGCTCGCCCACCTACAGCATGTCCTACTCGCAGCAGGGCACCCCTGGCATGGCTCTTGGCTCCATGGGTTCGGTGGTCAAGTCCGAGGCCAGCTCCAGCCCCCCTGTGGTTACCTCTTCCTCCCACTCCAGGGCGCCCTGCCAGGCCGGGGACCTCCGGGACATGATCAGCATGTATCTCCCCGGCGCCGAGGTGCCGGAACCCGCCGCCCCCAGCAGACTTCACATGTCCCAGCACTACCAGAGCGGCCCGGTGCCCGGCACGGCCATTAACGGCACACTGCCCCTCTCACACATGTGAGGGCCGGACAGCGAACTGGAGGGGGGAGAAATTTTCAAAGAAAAACGAGGGAAATGGGAGGGGTGCAAAAGAGGAGAGTAAGAAACAGCATGGAGAAAACCCGGTACGCTCAAAAAGAAAAAGGAAAAAAAAAAATCCCATCACCCACAGCAAATGACAGCTGCAAAAGAGAACACCAATCCCATCCACACTCACGCAAAAACCGCGATGCCGACAAGAAAACTTTTATGAGAGAGATCCTGGACTTCTTTTTGGGGGACTATTTTTGTACAGAGAAAACCTGGGGAGGGTGGGGAGGGCGGGGGAATGGACCTTGTATAGATCTGGAGGAAAGAAAGCTACGAAAAACTTTTTAAAAGTTCTAGTGGTACGGTAGGAGCTTTGCAGGAAGTTTGCAAAAGTCTTTACCAATAATATTTAGAGCTAGTCTCCAAGCGACGAAAAAAATGTTTTAATATTTGCAAGCAACTTTTGTACAGTATTTATCGAGATAAACATGGCAATCAAAATGTCCATTGTTTATAAGCTGAGAATTTGCCAATATTTTTCAAGGAGAGGCTTCTTGCTGAATTTTGATTCTGCAGCTGAAATTTAGGACAGTTGCAAACGTGAAAAGAAGAAAATTATTCAAATTTGGACATTTTAATTGTTTAAAAATTGTACAAAAGGAAAAAATTAGAATAAGTACTGGCGAACCATCTCTGTGGTCTTGTTTAAAAAGGGCAAAAGTTTTAGACTGTACTAAATTTTATAACTTACTGTTAAAAGCAAAAATGGCCATGCAGGTTGACACCGTTGGTAATTTATAATAGCTTTTGTTCGATCCCAACTTTCCATTTTGTTCAGATAAAAAAAACCATGAAATTACTGTGTTTGAAATATTTTCTTATGGTTTGTAATATTTCTGTAAATTTATTGTGATATTTTAAGGTTTTCCCCCCTTTATTTTCCGTAGTTGTATTTTAAAAGATTCGGCTCTGTATTATTTGAATCAGTCTGCCGAGAATCCATGTATATATTTGAACTAATATCATCCTTATAACAGGTACATTTTCAACTTAAGTTTTTACTCCATTATGCACAGTTTGAGATAAATAAATTTTTGAAATATGGACACTGAAA"
+
+atoh1<- "GGAGAAGCATAGTTGCACGCGACCTGGTGTGTGATCTCCGAGTGGGTGGGGGAGGGTCGAGGAGGGAAAAAAAAATAAGACGTTGCAGAAGAGACCCGGAAAGGGCCTTTTTTTTGGTTGAGCTGGTGTCCCAGTGCTGCCTCCGATCCTGAGCCTCCGAGCCTTTGCAGTGCAATGTCCCGCCTGCTGCATGCAGAAGAGTGGGCTGAAGTGAAGGAGTTGGGAGACCACCATCGCCAGCCCCAGCCGCATCATCTCCCGCAACCGCCGCCGCCGCCGCAGCCACCTGCAACTTTGCAGGCGAGAGAGCATCCCGTCTACCCGCCTGAGCTGTCCCTCCTGGACAGCACCGACCCACGCGCCTGGCTGGCTCCCACTTTGCAGGGCATCTGCACGGCACGCGCCGCCCAGTATTTGCTACATTCCCCGGAGCTGGGTGCCTCAGAGGCCGCTGCGCCCCGGGACGAGGTGGACGGCCGGGGGGAGCTGGTAAGGAGGAGCAGCGGCGGTGCCAGCAGCAGCAAGAGCCCCGGGCCGGTGAAAGTGCGGGAACAGCTGTGCAAGCTGAAAGGCGGGGTGGTGGTAGACGAGCTGGGCTGCAGCCGCCAACGGGCCCCTTCCAGCAAACAGGTGAATGGGGTGCAGAAGCAGAGACGGCTAGCAGCCAACGCCAGGGAGCGGCGCAGGATGCATGGGCTGAACCACGCCTTCGACCAGCTGCGCAATGTTATCCCGTCGTTCAACAACGACAAGAAGCTGTCCAAATATGAGACCCTGCAGATGGCCCAAATCTACATCAACGCCTTGTCCGAGCTGCTACAAACGCCCAGCGGAGGGGAACAGCCACCGCCGCCTCCAGCCTCCTGCAAAAGCGACCACCACCACCTTCGCACCGCGGCCTCCTATGAAGGGGGCGCGGGCAACGCGACCGCAGCTGGGGCTCAGCAGGCTTCCGGAGGGAGCCAGCGGCCGACCCCGCCCGGGAGTTGCCGGACTCGCTTCTCAGCCCCAGCTTCTGCGGGAGGGTACTCGGTGCAGCTGGACGCTCTGCACTTCTCGACTTTCGAGGACAGCGCCCTGACAGCGATGATGGCGCAAAAGAATTTGTCTCCTTCTCTCCCCGGGAGCATCTTGCAGCCAGTGCAGGAGGAAAACAGCAAAACTTCGCCTCGGTCCCACAGAAGCGACGGGGAATTTTCCCCCCATTCCCATTACAGTGACTCGGATGAGGCAAGTTAGGAAGGTGACAGAAGCCTGAAAACTGAGACAGAAACAAAACTGCCCTTTCCCAGTGCGCGGGAAGCCCCGCGGTTAAAGATCCCCGCACCCTTTAATTTTTGCTCTGCGATGGTCGTTGTTTAGCAACGACTTGGCTTCAGATGGCAGCTACATTTGATGGTTTGCAAATGCCGCCGCTGTTCCAAACTTCCTACGGTCCATATTGTTTGATGAAAACTTTCTGTTAAAATTGTGTCCTTTCCGCCCACCTTCTGCTCCCCCTTTAGATAGATACGGTATAATTGTAGGTACCCGTATATGGCATCATTATTCTAGTTCCCTGCTGCCAATACGCTGCTAAAACGTCGCATCTTCTCTGTCACTGGTTTGGGTTTAATTTATTTTACGCCCTGGGCATCCATCCTTGTGTGTTGCGCACTCAAGTGTGGGAGATTTAGTCTTCCGAAGTTGTTTTCCAAAATGCACAATGAAACGCAAAATTAGTGCTTCCAAAGTGGATAACTTTTGACTATGGAATTGTTAGAAAACAAGAAACTTTAAGGTTTATATATTGTATAAACATACCCAGTATGTGCATCCGATCGCGAGAACGTTGGCGTCTTTTAGGAAACTCCGCGCACGCACTTTATCAGCCGCTGCTGCGGTGGTGGCTCCAGGAGAAACTCAACTGCCAATTGCAGACCAGTTTTTTTTTTTTTAAACACAGCCACTTATAATTCTTAAGCTCTTTGCAAATGTTTGTTTAAAAAATGAAAAATTAAAAAAAATCTAGTAGTGTCAAACGCATTTGGTCAATTTTATTTTGCTTTGTTAATATTAGAAAACTTATTTATTATTGTTTGCTACCATTTCTACTTATCTTGATTCATTTTTTACGTTTTCTACTCGAGATCATTTTATTTTAATTTAGCAAAGCCAACTGCCCTTGTTTAATGTATTTTGTTTTGCAAATGATTAAAATAAATGTGAAAAG"
+
+krt20<- read.fasta(file = "D:/Masters corrections/KRT20.fa")
+
+
+krt20<- c(krt20.1,krt20.2,krt20.3,krt20.4)
+
+z<- d.unlist(krt20)
+
+density<- NULL
+for(i in seq_along(z)){
+  if(z[i] == "G" | z[i] == "C"){
+    print("Found you!!")
+    print(i) #global position
+    k<- i
+    density<- append(density, k)
+  }else{
+    next
+  }
+}
+gc.content<- paste("GC content: ",round(length(density)/length(z)*100,2),"%", sep = "")
+gc.content
+```
+
+
+```{r}
+x$u_score<- x$avg_log2FC
+  # to avoid infinite values if pct.2 = 0 #
+  x$pct.2<- ifelse(x$pct.2 <= 0, 0.0001, x$pct.2)
+  x$pct_avg<- x$pct.1/x$pct.2
+  x$u_score<- x$u_score*x$pct_avg
+```
+
