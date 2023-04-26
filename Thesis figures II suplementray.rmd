@@ -68,6 +68,10 @@ fun.l<- function(x){
   x<- unlist(strsplit(x, ","))
 }
 
+d<- function(x){
+  x<- unlist(strsplit(x, ","))
+}
+
 v<- function(data){
   View(data)
 }
